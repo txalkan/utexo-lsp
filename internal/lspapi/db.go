@@ -21,10 +21,15 @@ const (
 	statusFailed     = "failed"
 )
 
+var errLightningAddressAccountNotFound = errors.New("lightning address account not found")
+
 type Store interface {
 	Close() error
 	InsertOnchainSend(ctx context.Context, userRGBInvoice, lspLNInvoice string, lnExpiresAt *time.Time) (int64, error)
 	InsertLightningReceive(ctx context.Context, userLNInvoice, lspRGBInvoice, rgbAssetID string, batchTransferIdx int64, rgbExpiresAt *time.Time) (int64, error)
+	GetLightningAddressAccountByUsername(ctx context.Context, username string) (LightningAddressAccount, error)
+	GetLightningAddressAccountByPeerPubkey(ctx context.Context, peerPubkey string) (LightningAddressAccount, error)
+	InsertLightningAddressAccount(ctx context.Context, account LightningAddressAccount) (bool, error)
 	ListOnchainPending(ctx context.Context, limit int) ([]OnchainSendRecord, error)
 	ListLightningPending(ctx context.Context, limit int) ([]LightningReceiveRecord, error)
 	UpdateOnchainStatus(ctx context.Context, id int64, status, lastErr string) error
@@ -94,6 +99,11 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
+			CREATE TABLE IF NOT EXISTS lnaddr_accounts (
+				peer_pubkey TEXT PRIMARY KEY,
+				username TEXT NOT NULL UNIQUE,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);
 		`)
 		if err != nil {
 			return err
@@ -127,6 +137,11 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 			last_error TEXT NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS lnaddr_accounts (
+			peer_pubkey TEXT PRIMARY KEY,
+			username TEXT NOT NULL UNIQUE,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 	`)
 	if err != nil {
@@ -184,6 +199,56 @@ func (s *SQLStore) InsertLightningReceive(ctx context.Context, userLNInvoice, ls
 		return 0, err
 	}
 	return id, nil
+}
+
+func (s *SQLStore) GetLightningAddressAccountByUsername(ctx context.Context, username string) (LightningAddressAccount, error) {
+	query := `SELECT peer_pubkey, username, created_at FROM lnaddr_accounts WHERE username = ? LIMIT 1`
+	args := []any{username}
+	if s.driver == "postgres" {
+		query = `SELECT peer_pubkey, username, created_at FROM lnaddr_accounts WHERE username = $1 LIMIT 1`
+	}
+	row := s.db.QueryRowContext(ctx, query, args...)
+	return scanLightningAddressAccount(row)
+}
+
+func (s *SQLStore) GetLightningAddressAccountByPeerPubkey(ctx context.Context, peerPubkey string) (LightningAddressAccount, error) {
+	query := `SELECT peer_pubkey, username, created_at FROM lnaddr_accounts WHERE peer_pubkey = ? LIMIT 1`
+	args := []any{peerPubkey}
+	if s.driver == "postgres" {
+		query = `SELECT peer_pubkey, username, created_at FROM lnaddr_accounts WHERE peer_pubkey = $1 LIMIT 1`
+	}
+	row := s.db.QueryRowContext(ctx, query, args...)
+	return scanLightningAddressAccount(row)
+}
+
+func (s *SQLStore) InsertLightningAddressAccount(ctx context.Context, account LightningAddressAccount) (bool, error) {
+	if s.driver == "postgres" {
+		res, err := s.db.ExecContext(ctx, `
+			INSERT INTO lnaddr_accounts (peer_pubkey, username)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, account.PeerPubkey, account.Username)
+		if err != nil {
+			return false, err
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		return rows > 0, nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO lnaddr_accounts (peer_pubkey, username)
+		VALUES (?, ?)
+	`, account.PeerPubkey, account.Username)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 func (s *SQLStore) ListOnchainPending(ctx context.Context, limit int) ([]OnchainSendRecord, error) {
@@ -264,6 +329,25 @@ func (s *SQLStore) UpdateLightningStatus(ctx context.Context, id int64, status, 
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE lightning_receive_mappings SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, status, nullIfEmpty(lastErr), id)
 	return err
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanLightningAddressAccount(row rowScanner) (LightningAddressAccount, error) {
+	var account LightningAddressAccount
+	var createdAt sql.NullTime
+	if err := row.Scan(&account.PeerPubkey, &account.Username, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return LightningAddressAccount{}, errLightningAddressAccountNotFound
+		}
+		return LightningAddressAccount{}, err
+	}
+	if createdAt.Valid {
+		account.CreatedAt = createdAt.Time
+	}
+	return account, nil
 }
 
 func nullIfEmpty(v string) any {

@@ -22,6 +22,7 @@ type LNInvoiceInput struct {
 	ExpirySec   uint32  `json:"expiry_sec"`
 	AssetID     *string `json:"asset_id,omitempty"`
 	AssetAmount *uint64 `json:"asset_amount,omitempty"`
+	DescriptionHash *string `json:"description_hash,omitempty"`
 }
 
 type OnchainSendResponse struct {
@@ -47,6 +48,19 @@ type LightningReceiveResponse struct {
 	LNInvoice  string `json:"ln_invoice"`
 	RGBInvoice string `json:"rgb_invoice"`
 	MappingID  int64  `json:"mapping_id"`
+}
+
+type LightningAddressDiscoveryResponse struct {
+	Callback       string `json:"callback"`
+	MaxSendable    uint64 `json:"maxSendable"`
+	MinSendable    uint64 `json:"minSendable"`
+	Metadata       string `json:"metadata"`
+	Tag            string `json:"tag"`
+}
+
+type LightningAddressCallbackResponse struct {
+	PR     string   `json:"pr"`
+	Routes []string `json:"routes"`
 }
 
 type decodeLNResponse struct {
@@ -178,4 +192,10 @@ type LightningReceiveRecord struct {
 	Status           string
 	RGBExpiresAt     *time.Time
 	CreatedAt        time.Time
+}
+
+type LightningAddressAccount struct {
+	PeerPubkey string
+	Username   string
+	CreatedAt  time.Time
 }

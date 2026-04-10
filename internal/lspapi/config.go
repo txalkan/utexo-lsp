@@ -1,7 +1,10 @@
 package lspapi
 
 import (
+	"errors"
+	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -25,6 +28,12 @@ type Config struct {
 	ExpiryMatchToleranceSec uint32
 	MinAmtMsat              uint64
 	DefaultRGBAssignment    string
+
+	LightningAddressDomainURL       string
+	LightningAddressShortDescription string
+	LightningAddressMinSendableMsat uint64
+	LightningAddressMaxSendableMsat uint64
+	LightningAddressInvoiceExpiry   time.Duration
 
 	OpenConnectionPath  string
 	GetInfoPath         string
@@ -72,6 +81,11 @@ func LoadConfig() Config {
 		ExpiryMatchToleranceSec:   uint32(intOrDefault("EXPIRY_MATCH_TOLERANCE_SEC", 5)),
 		MinAmtMsat:                uint64(intOrDefault("MIN_AMT_MSAT", 3_000_000)),
 		DefaultRGBAssignment:      envOrDefault("DEFAULT_RGB_ASSIGNMENT", "Any"),
+		LightningAddressDomainURL: envOrDefault("LIGHTNING_ADDRESS_DOMAIN_URL", "http://127.0.0.1:8080"),
+		LightningAddressShortDescription: envOrDefault("LIGHTNING_ADDRESS_SHORT_DESCRIPTION", "Payment to utexo-lsp"),
+		LightningAddressMinSendableMsat:  uint64(intOrDefault("LIGHTNING_ADDRESS_MIN_SENDABLE_MSAT", 3_000_000)),
+		LightningAddressMaxSendableMsat:  uint64(intOrDefault("LIGHTNING_ADDRESS_MAX_SENDABLE_MSAT", 3_000_000)),
+		LightningAddressInvoiceExpiry:    durationOrDefault("LIGHTNING_ADDRESS_INVOICE_EXPIRY", 1*time.Hour),
 		OpenConnectionPath:        envOrDefault("LSP_OPENCONNECTION_PATH", "/connectpeer"),
 		GetInfoPath:               envOrDefault("LSP_GET_INFO_PATH", "/nodeinfo"),
 		ListConnectionsPath:       envOrDefault("LSP_LISTCONNECTIONS_PATH", "/listpeers"),
@@ -100,10 +114,35 @@ func LoadConfig() Config {
 		UtxoSkipSync:              boolOrDefault("UTXO_SKIP_SYNC", false),
 	}
 
+	if cfg.LightningAddressMinSendableMsat < cfg.MinAmtMsat {
+		cfg.LightningAddressMinSendableMsat = cfg.MinAmtMsat
+	}
+	if cfg.LightningAddressMaxSendableMsat < cfg.MinAmtMsat {
+		cfg.LightningAddressMaxSendableMsat = cfg.MinAmtMsat
+	}
+	if cfg.LightningAddressInvoiceExpiry <= 0 {
+		cfg.LightningAddressInvoiceExpiry = time.Hour
+	}
 	if cfg.LSPBaseURL == "" {
 		log.Fatal("LSP_BASE_URL is required")
 	}
 	return cfg
+}
+
+func (cfg Config) Validate() error {
+	if cfg.LSPBaseURL == "" {
+		return errors.New("LSP_BASE_URL is required")
+	}
+	if cfg.LightningAddressDomainURL == "" {
+		return errors.New("LIGHTNING_ADDRESS_DOMAIN_URL is required")
+	}
+	if err := validateLightningAddressDomainURL(cfg.LightningAddressDomainURL); err != nil {
+		return fmt.Errorf("invalid LIGHTNING_ADDRESS_DOMAIN_URL: %w", err)
+	}
+	if cfg.LightningAddressMaxSendableMsat < cfg.LightningAddressMinSendableMsat {
+		return errors.New("LIGHTNING_ADDRESS_MAX_SENDABLE_MSAT must be >= LIGHTNING_ADDRESS_MIN_SENDABLE_MSAT")
+	}
+	return nil
 }
 
 func envOrDefault(k, d string) string {
@@ -173,4 +212,41 @@ func boolOrDefault(k string, d bool) bool {
 	default:
 		return d
 	}
+}
+
+func validateLightningAddressDomainURL(v string) error {
+	_, err := parseLightningAddressDomainURL(v)
+	return err
+}
+
+func parseLightningAddressDomainURL(v string) (*url.URL, error) {
+	if strings.TrimSpace(v) == "" {
+		return nil, errors.New("empty URL")
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(v))
+	if err != nil {
+		return nil, err
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return nil, errors.New("must use http or https scheme")
+	}
+	if parsed.Host == "" {
+		return nil, errors.New("missing host")
+	}
+	if parsed.User != nil {
+		return nil, errors.New("userinfo is not allowed")
+	}
+	if parsed.Path != "" {
+		return nil, errors.New("path is not allowed")
+	}
+	if parsed.RawQuery != "" {
+		return nil, errors.New("query is not allowed")
+	}
+	if parsed.Fragment != "" {
+		return nil, errors.New("fragment is not allowed")
+	}
+	return parsed, nil
 }
