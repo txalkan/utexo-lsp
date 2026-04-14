@@ -13,6 +13,9 @@ import (
 // Run starts the API server and cron workers using environment-based config.
 func Run() {
 	cfg := LoadConfig()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("config validation failed: %v", err)
+	}
 
 	store, err := NewStore(cfg)
 	if err != nil {

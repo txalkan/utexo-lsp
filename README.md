@@ -21,11 +21,14 @@ This service exposes API endpoints for two flows:
 
 - `onchain_send`: user provides RGB invoice -> service creates LN invoice -> once paid, service executes `sendrgb`
 - `lightning_receive`: user provides LN invoice -> service creates RGB invoice -> once RGB transfer settles, service executes `sendpayment`
+- `lightning_address`: user provides `username@domain` -> service serves LNURL-pay discovery and callback for a DB-backed account, with haiku handles minted once and persisted per `peer_pubkey`
 
 ## Endpoints
 
 - `GET /health`
 - `GET /get_info`
+- `GET /.well-known/lnurlp/{username}`
+- `GET /pay/callback/{username}`
 - `POST /onchain_send`
 - `POST /lightning_receive`
 
@@ -76,6 +79,27 @@ Validation and normalization:
 - input `"Value"` is accepted and normalized to `Any`
 - unsupported assignment values are rejected
 - `duration_seconds` is validated against LN remaining lifetime; if missing/zero, auto-filled from decoded LN invoice
+
+### `GET /.well-known/lnurlp/{username}`
+
+Returns LNURL-pay discovery metadata for a Lightning Address account stored in `lnaddr_accounts`.
+
+Example:
+
+```bash
+curl -s http://127.0.0.1:8080/.well-known/lnurlp/txalkan
+```
+
+### `GET /pay/callback/{username}?amount=<msat>`
+
+Returns a BOLT11 invoice for the requested amount in millisatoshis.
+The callback includes the LNURL metadata hash as `description_hash` in the underlying `/lninvoice` request, which is required by LUD-06 so the invoice `h` tag matches the metadata string.
+
+Example:
+
+```bash
+curl -s "http://127.0.0.1:8080/pay/callback/txalkan?amount=3000000"
+```
 
 ## Cron jobs
 
@@ -136,6 +160,20 @@ Core env vars:
 - `SUPPORTED_ASSET_IDS` comma-separated allowlist (example: `assetA,assetB`)
 - `DEFAULT_VIRTUAL_OPEN_MODE` optional
 
+Lightning Address env vars:
+
+- `LIGHTNING_ADDRESS_DOMAIN_URL` default `http://127.0.0.1:8080` (must be an http(s) origin only, with no path/query/fragment; host used for `username@domain`)
+- `LIGHTNING_ADDRESS_SHORT_DESCRIPTION` default `Payment to utexo-lsp`
+- `LIGHTNING_ADDRESS_MIN_SENDABLE_MSAT` default `3_000_000`
+- `LIGHTNING_ADDRESS_MAX_SENDABLE_MSAT` default `3_000_000`
+- `LIGHTNING_ADDRESS_INVOICE_EXPIRY` default `1h`
+
+Lightning address accounts:
+
+- `lnaddr_accounts.peer_pubkey` is the primary key
+- The `localpart` (used as `username`) is generated once using `go-haikunator` and then stored persistently.
+- `reconcileChannels` seeds accounts automatically for peers discovered from `listconnections`
+
 Route override env vars:
 
 - `LSP_GET_INFO_PATH`, `LSP_OPENCONNECTION_PATH`, `LSP_LISTCONNECTIONS_PATH`, `LSP_LISTCHANNELS_PATH`, `LSP_OPENCHANNEL_PATH`
@@ -162,6 +200,7 @@ From project root:
 ```bash
 export LSP_BASE_URL="http://127.0.0.1:3001"
 export RGB_NODE_BASE_URL="http://127.0.0.1:3001"
+export LIGHTNING_ADDRESS_DOMAIN_URL="http://127.0.0.1:8080"
 export CRON_EVERY="10s"
 go run .
 ```

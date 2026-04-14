@@ -25,6 +25,8 @@ func (a *API) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", a.handleHealth)
 	mux.HandleFunc("GET /get_info", a.handleGetInfo)
+	mux.HandleFunc("GET /.well-known/lnurlp/{username}", a.handleLightningAddressDiscovery)
+	mux.HandleFunc("GET /pay/callback/{username}", a.handleLightningAddressCallback)
 	mux.HandleFunc("POST /onchain_send", a.handleOnchainSend)
 	mux.HandleFunc("POST /lightning_receive", a.handleLightningReceive)
 	return mux
@@ -284,12 +286,18 @@ func (a *API) reconcileChannels(ctx context.Context) error {
 	}
 
 	for _, c := range conns {
+		peerKey := peerOnly(c.PeerPubkeyAndOptAddr)
+		if peerKey != "" {
+			if _, err := a.ensureLightningAddressAccount(ctx, peerKey); err != nil {
+				log.Printf("ensure lightning address account for %s: %v", peerKey, err)
+			}
+		}
+
 		if !a.isSupportedAsset(c.AssetID) {
 			log.Printf("skip openchannel for unsupported asset_id: %v", c.AssetID)
 			continue
 		}
 
-		peerKey := peerOnly(c.PeerPubkeyAndOptAddr)
 		if _, ok := existing[channelKey(peerKey, c.AssetID)]; ok {
 			continue
 		}
