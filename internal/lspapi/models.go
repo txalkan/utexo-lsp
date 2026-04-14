@@ -18,10 +18,10 @@ type OnchainSendRequest struct {
 }
 
 type LNInvoiceInput struct {
-	AmtMsat     *uint64 `json:"amt_msat,omitempty"`
-	ExpirySec   uint32  `json:"expiry_sec"`
-	AssetID     *string `json:"asset_id,omitempty"`
-	AssetAmount *uint64 `json:"asset_amount,omitempty"`
+	AmtMsat         *uint64 `json:"amt_msat,omitempty"`
+	ExpirySec       uint32  `json:"expiry_sec"`
+	AssetID         *string `json:"asset_id,omitempty"`
+	AssetAmount     *uint64 `json:"asset_amount,omitempty"`
 	DescriptionHash *string `json:"description_hash,omitempty"`
 }
 
@@ -51,11 +51,11 @@ type LightningReceiveResponse struct {
 }
 
 type LightningAddressDiscoveryResponse struct {
-	Callback       string `json:"callback"`
-	MaxSendable    uint64 `json:"maxSendable"`
-	MinSendable    uint64 `json:"minSendable"`
-	Metadata       string `json:"metadata"`
-	Tag            string `json:"tag"`
+	Callback    string `json:"callback"`
+	MaxSendable uint64 `json:"maxSendable"`
+	MinSendable uint64 `json:"minSendable"`
+	Metadata    string `json:"metadata"`
+	Tag         string `json:"tag"`
 }
 
 type LightningAddressCallbackResponse struct {

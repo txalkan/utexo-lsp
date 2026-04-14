@@ -4,7 +4,7 @@ import "testing"
 
 func TestValidateLightningAddressDomainURL(t *testing.T) {
 	base := Config{
-		LSPBaseURL:                 "http://127.0.0.1:3001",
+		LSPBaseURL:                      "http://127.0.0.1:3001",
 		LightningAddressMinSendableMsat: 1,
 		LightningAddressMaxSendableMsat: 1,
 	}
