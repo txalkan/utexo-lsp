@@ -30,6 +30,9 @@ type Store interface {
 	GetLightningAddressAccountByUsername(ctx context.Context, username string) (LightningAddressAccount, error)
 	GetLightningAddressAccountByPeerPubkey(ctx context.Context, peerPubkey string) (LightningAddressAccount, error)
 	InsertLightningAddressAccount(ctx context.Context, account LightningAddressAccount) (bool, error)
+	ReserveLightningAddressInvoiceSlot(ctx context.Context, account LightningAddressAccount, amountMsat uint64, expiry time.Duration) (AsyncRotatingInvoice, error)
+	FinalizeLightningAddressInvoiceSlot(ctx context.Context, reservationID int64, invoice string) error
+	ReleaseLightningAddressInvoiceSlot(ctx context.Context, reservationID int64, lastErr string) error
 	ListOnchainPending(ctx context.Context, limit int) ([]OnchainSendRecord, error)
 	ListLightningPending(ctx context.Context, limit int) ([]LightningReceiveRecord, error)
 	UpdateOnchainStatus(ctx context.Context, id int64, status, lastErr string) error
@@ -142,6 +145,42 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 			peer_pubkey TEXT PRIMARY KEY,
 			username TEXT NOT NULL UNIQUE,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS async_orders (
+			order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			peer_pubkey TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL,
+			current_invoice_slot INTEGER NULL,
+			current_hash_index INTEGER NULL,
+			current_payment_hash TEXT NULL,
+			current_invoice_id INTEGER NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS async_hash_pool (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			order_id INTEGER NOT NULL REFERENCES async_orders(order_id) ON DELETE CASCADE,
+			hash_index INTEGER NOT NULL,
+			payment_hash TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(order_id, hash_index),
+			UNIQUE(order_id, payment_hash)
+		);
+		CREATE TABLE IF NOT EXISTS async_rotating_invoices (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			order_id INTEGER NOT NULL REFERENCES async_orders(order_id) ON DELETE CASCADE,
+			invoice_slot INTEGER NOT NULL,
+			hash_index INTEGER NOT NULL,
+			payment_hash TEXT NOT NULL,
+			invoice_string TEXT NULL,
+			amount_msat INTEGER NOT NULL,
+			expires_at DATETIME NOT NULL,
+			status TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(order_id, invoice_slot)
 		);
 	`)
 	if err != nil {
