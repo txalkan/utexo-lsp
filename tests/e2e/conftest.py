@@ -8,11 +8,9 @@ import pytest
 
 from e2e.clients.lsp import LspApiClient
 from e2e.clients.rln import RlnClient
-from e2e.clients.sdk_node import SdkNodeClient
 from e2e.support.config import E2EConfig
 from e2e.support.harness import (
     Env,
-    create_sdk_node,
     create_utxos,
     docker_unlock_payload,
     dump_current_state,
@@ -25,6 +23,7 @@ from e2e.support.harness import (
     spawn_rln_node,
     spawn_utexo_lsp,
     terminate_process,
+    wait_for_peer_channel_usable,
     wait_for_channels_usable,
     wait_for_rln_boot,
     wait_for_utexo_boot,
@@ -110,11 +109,15 @@ def env(cfg: E2EConfig, request: pytest.FixtureRequest):
     docker_datadirs = {
         "lsp": artifact_dir / "docker-lsp",
         "faucet": artifact_dir / "docker-faucet",
+        "user_a": artifact_dir / "docker-user-a",
+        "user_b": artifact_dir / "docker-user-b",
     }
 
     node_logs = {
         "lsp": artifact_dir / "rln-lsp.log",
         "faucet": artifact_dir / "rln-faucet.log",
+        "user_a": artifact_dir / "rln-user-a.log",
+        "user_b": artifact_dir / "rln-user-b.log",
     }
     node_processes = {
         "lsp": spawn_rln_node(
@@ -133,37 +136,52 @@ def env(cfg: E2EConfig, request: pytest.FixtureRequest):
             cfg.faucet_peer_port,
             node_logs["faucet"],
         ),
+        "user_a": spawn_rln_node(
+            cfg,
+            cfg.user_a_container_name,
+            docker_datadirs["user_a"],
+            cfg.user_a_daemon_port,
+            cfg.user_a_peer_port,
+            node_logs["user_a"],
+        ),
+        "user_b": spawn_rln_node(
+            cfg,
+            cfg.user_b_container_name,
+            docker_datadirs["user_b"],
+            cfg.user_b_daemon_port,
+            cfg.user_b_peer_port,
+            node_logs["user_b"],
+        ),
     }
     for name, process in (
         (cfg.lsp_container_name, node_processes["lsp"]),
         (cfg.faucet_container_name, node_processes["faucet"]),
+        (cfg.user_a_container_name, node_processes["user_a"]),
+        (cfg.user_b_container_name, node_processes["user_b"]),
     ):
         request.addfinalizer(lambda name=name: remove_container(name))
         request.addfinalizer(lambda process=process: terminate_process(process))
 
-    sdk_node_a = create_sdk_node(cfg, artifact_dir / "sdk-node-a", cfg.user_a_daemon_port, cfg.user_a_peer_port)
-    sdk_node_b = create_sdk_node(cfg, artifact_dir / "sdk-node-b", cfg.user_b_daemon_port, cfg.user_b_peer_port)
-    request.addfinalizer(sdk_node_a.shutdown)
-    request.addfinalizer(sdk_node_b.shutdown)
-
     clients = {
         "lsp": RlnClient(cfg.lsp_url),
-        "user_a": SdkNodeClient(sdk_node_a),
-        "user_b": SdkNodeClient(sdk_node_b),
+        "user_a": RlnClient(cfg.user_a_url),
+        "user_b": RlnClient(cfg.user_b_url),
         "faucet": RlnClient(cfg.faucet_url),
     }
 
     wait_for_rln_boot(clients["lsp"], cfg)
     wait_for_rln_boot(clients["faucet"], cfg)
+    wait_for_rln_boot(clients["user_a"], cfg)
+    wait_for_rln_boot(clients["user_b"], cfg)
 
     clients["lsp"].init(cfg.password)
     clients["faucet"].init(cfg.password)
-    clients["lsp"].unlock_with_payload(docker_unlock_payload(cfg))
-    clients["faucet"].unlock_with_payload(docker_unlock_payload(cfg))
     clients["user_a"].init(cfg.password)
     clients["user_b"].init(cfg.password)
-    clients["user_a"].unlock(cfg)
-    clients["user_b"].unlock(cfg)
+    clients["lsp"].unlock_with_payload(docker_unlock_payload(cfg))
+    clients["faucet"].unlock_with_payload(docker_unlock_payload(cfg))
+    clients["user_a"].unlock_with_payload(docker_unlock_payload(cfg))
+    clients["user_b"].unlock_with_payload(docker_unlock_payload(cfg))
 
     status, _ = clients["lsp"].post_allow_error("/sendrgb", {})
     if status == 404:
@@ -185,8 +203,6 @@ def env(cfg: E2EConfig, request: pytest.FixtureRequest):
     wait_for_utexo_boot(lsp_api, cfg)
 
     lsp_pubkey = lsp_api.get_info()["pubkey"]
-    clients["user_a"].connectpeer(f"{lsp_pubkey}@{cfg.daemon_host}:{cfg.lsp_peer_port}")
-    clients["user_b"].connectpeer(f"{lsp_pubkey}@{cfg.daemon_host}:{cfg.lsp_peer_port}")
 
     env_obj = Env(
         cfg=cfg,
@@ -200,6 +216,12 @@ def env(cfg: E2EConfig, request: pytest.FixtureRequest):
         artifact_dir=artifact_dir,
     )
     request.addfinalizer(lambda: dump_current_state(env_obj))
+
+    # Deterministic bring-up: avoid concurrent LSP channel opens racing on RGB allocations.
+    clients["user_a"].connectpeer(f"{lsp_pubkey}@{cfg.lsp_container_name}:{cfg.lsp_peer_port}")
+    wait_for_peer_channel_usable(env_obj, clients["user_a"], label="user_a")
+    clients["user_b"].connectpeer(f"{lsp_pubkey}@{cfg.lsp_container_name}:{cfg.lsp_peer_port}")
+    wait_for_peer_channel_usable(env_obj, clients["user_b"], label="user_b")
 
     wait_for_channels_usable(env_obj)
 

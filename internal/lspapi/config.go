@@ -55,6 +55,7 @@ type Config struct {
 	CreateUtxosPath      string
 
 	DefaultChannelCapacitySat uint64
+	DefaultChannelAssetAmount uint64
 	DefaultChannelPushMsat    uint64
 	SupportedAssetIDs         []string
 	DefaultVirtualOpenMode    string
@@ -104,6 +105,7 @@ func LoadConfig() Config {
 		ListUnspentsPath:                 envOrDefault("RGB_LIST_UNSPENTS_PATH", "/listunspents"),
 		CreateUtxosPath:                  envOrDefault("RGB_CREATE_UTXOS_PATH", "/createutxos"),
 		DefaultChannelCapacitySat:        uint64(intOrDefault("DEFAULT_CHANNEL_CAPACITY_SAT", 200000)),
+		DefaultChannelAssetAmount:        uint64(intOrDefault("DEFAULT_CHANNEL_ASSET_AMOUNT", 1)),
 		DefaultChannelPushMsat:           uint64(intOrDefault("DEFAULT_CHANNEL_PUSH_MSAT", 0)),
 		SupportedAssetIDs:                csvOrDefault("SUPPORTED_ASSET_IDS", ""),
 		DefaultVirtualOpenMode:           strings.TrimSpace(os.Getenv("DEFAULT_VIRTUAL_OPEN_MODE")),

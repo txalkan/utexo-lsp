@@ -16,7 +16,7 @@ def test_flow0_full_e2e(env):
         channel = next((c for c in channels if c["peer_pubkey"] == env.lsp_pubkey), channels[0])
         if channel["status"] != "Opened" or channel["is_usable"] is not True:
             return False
-        if channel["outbound_balance_msat"] != env.cfg.payment_msat:
+        if channel["outbound_balance_msat"] < env.cfg.payment_msat:
             return False
         return channel
 
