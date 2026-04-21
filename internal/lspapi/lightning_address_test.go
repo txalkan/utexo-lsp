@@ -2,7 +2,9 @@ package lspapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -126,6 +128,137 @@ func TestLightningAddressCallbackIncludesDescriptionHash(t *testing.T) {
 	if len(resp.Routes) != 0 {
 		t.Fatalf("expected empty routes, got %#v", resp.Routes)
 	}
+	if _, ok := received["description_hash"]; !ok {
+		t.Fatalf("expected description_hash in request body: %#v", received)
+	}
+	if _, ok := received["payment_hash"]; !ok {
+		t.Fatalf("expected payment_hash in request body: %#v", received)
+	}
+}
+
+func TestLightningAddressCallbackPersistsRotatingInvoiceSlots(t *testing.T) {
+	api, account := newLightningAddressTestAPI(t, "https://example.com", "Payment to txalkan", newInvoiceStubClient(t, nil, http.StatusOK, map[string]string{"invoice": "lnbc1testinvoice"}))
+	api.cfg.LNInvoicePath = "/lninvoice"
+	store := api.db.(*SQLStore)
+	formatNullInt64 := func(v sql.NullInt64) string {
+		if !v.Valid {
+			return "NULL"
+		}
+		return fmt.Sprintf("%d", v.Int64)
+	}
+	formatNullString := func(v sql.NullString) string {
+		if !v.Valid {
+			return "NULL"
+		}
+		return v.String
+	}
+	logOrderSnapshot := func(label string) int64 {
+		var orderID int64
+		var peerPubkey string
+		var orderStatus string
+		var orderCurrentInvoiceSlot sql.NullInt64
+		var orderCurrentHashIndex sql.NullInt64
+		var orderCurrentPaymentHash sql.NullString
+		if err := store.db.QueryRowContext(context.Background(), `
+			SELECT order_id, peer_pubkey, status, current_invoice_slot, current_hash_index, current_payment_hash
+			FROM async_orders
+			WHERE peer_pubkey = ?
+		`, strings.ToLower(lightningAddressTestPeerPubkey)).Scan(&orderID, &peerPubkey, &orderStatus, &orderCurrentInvoiceSlot, &orderCurrentHashIndex, &orderCurrentPaymentHash); err != nil {
+			t.Fatalf("%s lookup async order: %v", label, err)
+		}
+		t.Logf("%s async order: order_id=%d peer_pubkey=%s status=%s current_invoice_slot=%s current_hash_index=%s current_payment_hash=%s", label, orderID, peerPubkey, orderStatus, formatNullInt64(orderCurrentInvoiceSlot), formatNullInt64(orderCurrentHashIndex), formatNullString(orderCurrentPaymentHash))
+		return orderID
+	}
+
+	req1 := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
+	rr1 := httptest.NewRecorder()
+	api.routes().ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first callback expected 200, got %d: %s", rr1.Code, rr1.Body.String())
+	}
+	logOrderSnapshot("after callback 1")
+
+	req2 := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
+	rr2 := httptest.NewRecorder()
+	api.routes().ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second callback expected 200, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+
+	orderID := logOrderSnapshot("after callback 2")
+
+	var count int64
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM async_rotating_invoices WHERE order_id = ?`, orderID).Scan(&count); err != nil {
+		t.Fatalf("count async invoices: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 async invoices, got %d", count)
+	}
+
+	rows, err := store.db.QueryContext(context.Background(), `
+		SELECT id, invoice_slot, hash_index, payment_hash, invoice_string, amount_msat, expires_at, status
+		FROM async_rotating_invoices
+		WHERE order_id = ?
+		ORDER BY invoice_slot ASC
+	`, orderID)
+	if err != nil {
+		t.Fatalf("list async invoices: %v", err)
+	}
+	defer rows.Close()
+
+	var slots []int64
+	var hashes []string
+	for rows.Next() {
+		var id int64
+		var slot int64
+		var hashIndex int64
+		var paymentHash string
+		var invoiceString sql.NullString
+		var amountMsat int64
+		var expiresAt time.Time
+		var status string
+		if err := rows.Scan(&id, &slot, &hashIndex, &paymentHash, &invoiceString, &amountMsat, &expiresAt, &status); err != nil {
+			t.Fatalf("scan async invoice: %v", err)
+		}
+		t.Logf("async invoice: id=%d invoice_slot=%d hash_index=%d payment_hash=%s invoice_string=%s amount_msat=%d expires_at=%s status=%s", id, slot, hashIndex, paymentHash, formatNullString(invoiceString), amountMsat, expiresAt.Format(time.RFC3339Nano), status)
+		if status != asyncInvoiceStatusActive {
+			t.Fatalf("expected active invoice status, got %s", status)
+		}
+		if hashIndex <= 0 {
+			t.Fatalf("expected positive hash index, got %d", hashIndex)
+		}
+		slots = append(slots, slot)
+		hashes = append(hashes, paymentHash)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate async invoices: %v", err)
+	}
+	if len(slots) != 2 || slots[0] != 1 || slots[1] != 2 {
+		t.Fatalf("unexpected invoice slots: %#v", slots)
+	}
+	if hashes[0] == "" || hashes[1] == "" {
+		t.Fatalf("expected populated payment hashes: %#v", hashes)
+	}
+	if hashes[0] == hashes[1] {
+		t.Fatalf("expected distinct payment hashes, got %#v", hashes)
+	}
+
+	var currentSlot int64
+	var currentHashIndex int64
+	var currentPaymentHash string
+	if err := store.db.QueryRowContext(context.Background(), `SELECT current_invoice_slot, current_hash_index, current_payment_hash FROM async_orders WHERE order_id = ?`, orderID).Scan(&currentSlot, &currentHashIndex, &currentPaymentHash); err != nil {
+		t.Fatalf("lookup current order state: %v", err)
+	}
+	if currentSlot != 2 {
+		t.Fatalf("expected current slot 2, got %d", currentSlot)
+	}
+	if currentHashIndex <= 0 {
+		t.Fatalf("expected current hash index to be set, got %d", currentHashIndex)
+	}
+	if currentPaymentHash != hashes[1] {
+		t.Fatalf("expected current payment hash to match latest invoice, got %s want %s", currentPaymentHash, hashes[1])
+	}
+	t.Logf("current async order state: current_invoice_slot=%d current_hash_index=%d current_payment_hash=%s", currentSlot, currentHashIndex, currentPaymentHash)
 }
 
 func TestLightningAddressCallbackFailsIfDescriptionHashRejected(t *testing.T) {
@@ -178,6 +311,9 @@ func (rt *invoiceStubRoundTripper) RoundTrip(req *http.Request) (*http.Response,
 		}
 		if _, ok := (*rt.received)["description_hash"]; !ok {
 			rt.t.Errorf("expected description_hash in request body: %s", string(body))
+		}
+		if _, ok := (*rt.received)["payment_hash"]; !ok {
+			rt.t.Errorf("expected payment_hash in request body: %s", string(body))
 		}
 	}
 

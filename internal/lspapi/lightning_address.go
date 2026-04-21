@@ -142,9 +142,21 @@ func (a *API) handleLightningAddressCallback(w http.ResponseWriter, r *http.Requ
 		writeLightningAddressError(w, http.StatusInternalServerError, fmt.Sprintf("failed to build lightning address metadata: %v", err))
 		return
 	}
-	invoice, err := a.createLightningAddressInvoice(r.Context(), amountMsat, metadata)
+	reservation, err := a.db.ReserveLightningAddressInvoiceSlot(r.Context(), account, amountMsat, a.cfg.LightningAddressInvoiceExpiry)
 	if err != nil {
+		writeLightningAddressError(w, http.StatusInternalServerError, fmt.Sprintf("failed to reserve lightning address invoice slot: %v", err))
+		return
+	}
+	invoice, err := a.requestHodlInvoice(r.Context(), amountMsat, metadata, reservation.PaymentHash)
+	if err != nil {
+		if releaseErr := a.db.ReleaseLightningAddressInvoiceSlot(r.Context(), reservation.ID, err.Error()); releaseErr != nil {
+			err = fmt.Errorf("%v (and failed to release reservation: %v)", err, releaseErr)
+		}
 		writeLightningAddressError(w, http.StatusInternalServerError, fmt.Sprintf("error constructing invoice: %v", err))
+		return
+	}
+	if err := a.db.FinalizeLightningAddressInvoiceSlot(r.Context(), reservation.ID, invoice); err != nil {
+		writeLightningAddressError(w, http.StatusInternalServerError, fmt.Sprintf("error persisting invoice slot: %v", err))
 		return
 	}
 
@@ -154,7 +166,10 @@ func (a *API) handleLightningAddressCallback(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-func (a *API) createLightningAddressInvoice(ctx context.Context, amountMsat uint64, metadata string) (string, error) {
+func (a *API) requestHodlInvoice(ctx context.Context, amountMsat uint64, metadata, paymentHash string) (string, error) {
+	if strings.TrimSpace(paymentHash) == "" {
+		return "", errors.New("empty payment hash")
+	}
 	payload := LNInvoiceInput{
 		AmtMsat:   &amountMsat,
 		ExpirySec: uint32(a.cfg.LightningAddressInvoiceExpiry.Seconds()),
@@ -163,6 +178,9 @@ func (a *API) createLightningAddressInvoice(ctx context.Context, amountMsat uint
 		sum := sha256.Sum256([]byte(metadata))
 		hash := hex.EncodeToString(sum[:])
 		payload.DescriptionHash = &hash
+	}
+	if paymentHash != "" {
+		payload.PaymentHash = &paymentHash
 	}
 
 	var resp struct {
