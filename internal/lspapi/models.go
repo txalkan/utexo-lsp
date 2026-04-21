@@ -23,6 +23,7 @@ type LNInvoiceInput struct {
 	AssetID         *string `json:"asset_id,omitempty"`
 	AssetAmount     *uint64 `json:"asset_amount,omitempty"`
 	DescriptionHash *string `json:"description_hash,omitempty"`
+	PaymentHash     *string `json:"payment_hash,omitempty"`
 }
 
 type OnchainSendResponse struct {
@@ -200,4 +201,18 @@ type LightningAddressAccount struct {
 	PeerPubkey string
 	Username   string
 	CreatedAt  time.Time
+}
+
+type AsyncRotatingInvoice struct {
+	ID            int64
+	OrderID       int64
+	InvoiceSlot   int64
+	HashIndex     int64
+	PaymentHash   string
+	InvoiceString *string
+	AmountMsat    uint64
+	ExpiresAt     time.Time
+	Status        string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }

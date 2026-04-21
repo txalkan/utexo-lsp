@@ -120,6 +120,7 @@ def create_sdk_node(
     storage_dir: Path,
     daemon_port: int,
     peer_port: int,
+    *,
     virtual_peer_pubkeys: list[str] | None = None,
 ):
     import rgb_lightning_node as rln
