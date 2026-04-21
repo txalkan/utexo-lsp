@@ -56,8 +56,6 @@ def reset_environment(cfg: E2EConfig):
     kill_matching("go run \\.")
     remove_container(cfg.lsp_container_name)
     remove_container(cfg.faucet_container_name)
-    remove_container(cfg.user_a_container_name)
-    remove_container(cfg.user_b_container_name)
 
     shutil.rmtree(cfg.logs_dir, ignore_errors=True)
 

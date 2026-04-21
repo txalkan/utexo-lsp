@@ -87,14 +87,6 @@ class E2EConfig:
         return os.environ.get("RGBLN_FAUCET_CONTAINER_NAME", "utexo-e2e-faucet")
 
     @property
-    def user_a_container_name(self) -> str:
-        return os.environ.get("RGBLN_USER_A_CONTAINER_NAME", "utexo-e2e-user-a")
-
-    @property
-    def user_b_container_name(self) -> str:
-        return os.environ.get("RGBLN_USER_B_CONTAINER_NAME", "utexo-e2e-user-b")
-
-    @property
     def lsp_url(self) -> str:
         return f"http://{self.daemon_host}:{self.lsp_daemon_port}"
 

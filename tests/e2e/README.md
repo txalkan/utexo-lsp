@@ -8,8 +8,7 @@ Current harness shape:
 - regtest services (`bitcoind`, `electrs`, `proxy`) must already be running before `pytest`
 
 Current status:
-- `test_lightning_receive.py` is green
-- `test_flow0_full_e2e.py` reproduces the current blocker at flow 0 step 8 (`User A pay invoice`)
+- `test_flow0_full_e2e.py` covers flow 0 end-to-end
 
 ## Prerequisites
 
@@ -61,14 +60,12 @@ From the `utexo-lsp` repo root:
 
 ```bash
 python3 -m pytest tests/unit -vv
-python3 -m pytest tests/e2e/tests/test_lightning_receive.py -vv
 python3 -m pytest tests/e2e/tests/test_flow0_full_e2e.py -vv
 ```
 
 Expected results:
 - `tests/unit` — pass
-- `test_lightning_receive.py` — pass
-- `test_flow0_full_e2e.py` — fails at flow 0 step 8 (`User A pay invoice`)
+- `test_flow0_full_e2e.py` — pass
 
 On failure, diagnostic artifacts are written under `/tmp/utexo-lsp-e2e/`.
 
@@ -93,7 +90,5 @@ In CI:
 3. Start regtest with `./regtest.sh start`
 4. Run:
    - `python3 -m pytest tests/unit -vv`
-   - `python3 -m pytest tests/e2e/tests/test_lightning_receive.py -vv`
+   - `python3 -m pytest tests/e2e/tests/test_flow0_full_e2e.py -vv`
 5. Stop regtest in cleanup
-
-`test_flow0_full_e2e.py` should stay out of blocking CI until step 8 is implemented.
