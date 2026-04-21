@@ -144,6 +144,15 @@ def create_sdk_node(
 def docker_unlock_payload(cfg: E2EConfig) -> dict[str, object]:
     # Dockerized RLN daemons must reach sibling services by compose service name,
     # unlike SDK nodes running on the host, which use localhost endpoints.
+    # For cross-env RGB channel opens (dockerized LSP <-> host SDK nodes),
+    # the proxy endpoint advertised by the dockerized LSP must also be reachable
+    # from the host. The docker network gateway satisfies both sides.
+    proxy_endpoint = cfg.docker_proxy_endpoint
+    if proxy_endpoint == "rpc://proxy:3000/json-rpc":
+        gateway = docker_network_gateway(cfg.docker_network)
+        if gateway:
+            proxy_endpoint = f"rpc://{gateway}:3000/json-rpc"
+
     return {
         "password": cfg.password,
         "bitcoind_rpc_username": cfg.bitcoind_user,
@@ -151,9 +160,30 @@ def docker_unlock_payload(cfg: E2EConfig) -> dict[str, object]:
         "bitcoind_rpc_host": cfg.docker_bitcoind_host,
         "bitcoind_rpc_port": cfg.bitcoind_port,
         "indexer_url": cfg.docker_indexer_url,
-        "proxy_endpoint": cfg.docker_proxy_endpoint,
+        "proxy_endpoint": proxy_endpoint,
         "announce_addresses": [],
     }
+
+
+def docker_network_gateway(network_name: str) -> str | None:
+    try:
+        out = subprocess.run(
+            [
+                "docker",
+                "network",
+                "inspect",
+                network_name,
+                "--format",
+                "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    gateway = out.stdout.strip()
+    return gateway or None
 
 
 def wait_for_rln_boot(client: RlnClient, cfg: E2EConfig):
