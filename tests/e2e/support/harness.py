@@ -14,8 +14,6 @@ from e2e.clients.sdk_node import SdkNodeClient
 from e2e.support.config import E2EConfig
 from e2e.support.utils import wait_until, write_json
 
-DEFAULT_DOCKER_PROXY_ENDPOINT = "rpc://proxy:3000/json-rpc"
-
 
 @dataclass
 class Env:
@@ -88,6 +86,8 @@ def spawn_rln_node(cfg: E2EConfig, name: str, datadir: Path, daemon_port: int, p
         name,
         "--user",
         f"{os.getuid()}:{os.getgid()}",
+        "--add-host",
+        f"{cfg.docker_proxy_host_alias}:host-gateway",
         "-p",
         f"{daemon_port}:{daemon_port}",
         "-p",
@@ -143,7 +143,16 @@ def create_sdk_node(
 
 
 def docker_unlock_payload(cfg: E2EConfig) -> dict[str, object]:
-    proxy_endpoint = resolve_shared_proxy_endpoint(cfg)
+    # Dockerized RLN daemons must reach sibling services by compose service name,
+    # unlike SDK nodes running on the host, which use localhost endpoints.
+    # For cross-env RGB channel opens (dockerized LSP <-> host SDK nodes),
+    # the proxy endpoint advertised by the dockerized LSP must also be reachable
+    # from both the host and the container. We use the host machine hostname,
+    # resolve it to the host gateway inside the container, and let the host
+    # resolve it normally via its local name service.
+    proxy_endpoint = cfg.docker_proxy_endpoint
+    if proxy_endpoint == "rpc://proxy:3000/json-rpc":
+        proxy_endpoint = f"rpc://{cfg.docker_proxy_host_alias}:3000/json-rpc"
 
     return {
         "password": cfg.password,
@@ -155,25 +164,6 @@ def docker_unlock_payload(cfg: E2EConfig) -> dict[str, object]:
         "proxy_endpoint": proxy_endpoint,
         "announce_addresses": [],
     }
-
-
-def resolve_shared_proxy_endpoint(cfg: E2EConfig) -> str:
-    # LSP runs in Docker while SDK nodes run on host. The endpoint RLN advertises
-    # for RGB consignments must be reachable from both environments.
-    if cfg.shared_proxy_endpoint:
-        return cfg.shared_proxy_endpoint
-    if cfg.docker_proxy_endpoint != DEFAULT_DOCKER_PROXY_ENDPOINT:
-        return cfg.docker_proxy_endpoint
-
-    gateway = docker_network_gateway(cfg.docker_network)
-    if gateway:
-        return f"rpc://{gateway}:3000/json-rpc"
-
-    raise AssertionError(
-        "Could not resolve shared RGB proxy endpoint for cross-env E2E. "
-        "Set RGBLN_SHARED_PROXY_ENDPOINT to a host:port reachable from both Docker RLN and host SDK nodes."
-    )
-
 
 def docker_network_gateway(network_name: str) -> str | None:
     try:
@@ -251,7 +241,6 @@ def seed_lsp_from_faucet(cfg: E2EConfig, lsp: RlnClient, faucet: RlnClient, asse
     # Seed as discrete 1-unit transfers to avoid locking all value in a single
     # pending change output, which can block opening channels to multiple peers.
     seed_units = max(1, int(cfg.lsp_seed_asset_amount))
-    transport_endpoint = resolve_shared_proxy_endpoint(cfg)
     for i in range(seed_units):
         invoice = lsp.rgbinvoice_any()
         faucet.sendrgb(
@@ -265,7 +254,7 @@ def seed_lsp_from_faucet(cfg: E2EConfig, lsp: RlnClient, faucet: RlnClient, asse
                         {
                             "recipient_id": invoice["recipient_id"],
                             "assignment": {"type": "Fungible", "value": 1},
-                            "transport_endpoints": [transport_endpoint],
+                            "transport_endpoints": [cfg.docker_proxy_endpoint],
                         }
                     ]
                 },
@@ -360,15 +349,6 @@ def sync_clients(clients: Iterable[object]):
 
 def sync_sdk_nodes(env: Env):
     sync_clients((env.user_a, env.user_b))
-
-
-def settle_after_first_peer_channel(env: Env):
-    # The second channel open can race while RGB transfer state from the first
-    # channel is still settling. Flush transfer processing and advance chain.
-    refresh_transfers(env)
-    sync_sdk_nodes(env)
-    mine(env, 2)
-
 
 def wait_for_peer_channel_usable(env: Env, peer: RlnClient | SdkNodeClient, *, label: str):
     mine(env, 2)

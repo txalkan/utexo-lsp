@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,8 +55,8 @@ class E2EConfig:
     docker_proxy_endpoint: str = field(
         default_factory=lambda: os.environ.get("RGBLN_DOCKER_PROXY_ENDPOINT", "rpc://proxy:3000/json-rpc")
     )
-    shared_proxy_endpoint: str = field(
-        default_factory=lambda: os.environ.get("RGBLN_SHARED_PROXY_ENDPOINT", "").strip()
+    docker_proxy_host_alias: str = field(
+        default_factory=lambda: os.environ.get("RGBLN_DOCKER_PROXY_HOST_ALIAS", socket.gethostname())
     )
 
     cron_every_seconds: int = 5
