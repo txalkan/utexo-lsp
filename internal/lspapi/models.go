@@ -99,6 +99,7 @@ type Connection struct {
 	CapacitySat          uint64          `json:"capacity_sat"`
 	PushMsat             uint64          `json:"push_msat"`
 	AssetID              *string         `json:"asset_id"`
+	AssetAmount          *uint64         `json:"asset_amount,omitempty"`
 	Public               bool            `json:"public"`
 	WithAnchors          bool            `json:"with_anchors"`
 	AssetDecimals        *uint8          `json:"asset_decimals"`
@@ -166,6 +167,7 @@ type OpenChannelRequest struct {
 	CapacitySat               uint64  `json:"capacity_sat"`
 	PushMsat                  uint64  `json:"push_msat"`
 	AssetID                   *string `json:"asset_id,omitempty"`
+	AssetAmount               *uint64 `json:"asset_amount,omitempty"`
 	PushAssetAmount           *uint64 `json:"push_asset_amount,omitempty"`
 	Public                    bool    `json:"public"`
 	WithAnchors               bool    `json:"with_anchors"`

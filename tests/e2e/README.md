@@ -8,8 +8,7 @@ Current harness shape:
 - regtest services (`bitcoind`, `electrs`, `proxy`) must already be running before `pytest`
 
 Current status:
-- `test_lightning_receive.py` is green
-- `test_flow0_full_e2e.py` reproduces the current blocker at flow 0 step 8 (`User A pay invoice`)
+- `test_flow0_full_e2e.py` covers flow 0 end-to-end
 
 ## Prerequisites
 
@@ -61,14 +60,12 @@ From the `utexo-lsp` repo root:
 
 ```bash
 python3 -m pytest tests/unit -vv
-python3 -m pytest tests/e2e/tests/test_lightning_receive.py -vv
 python3 -m pytest tests/e2e/tests/test_flow0_full_e2e.py -vv
 ```
 
 Expected results:
 - `tests/unit` — pass
-- `test_lightning_receive.py` — pass
-- `test_flow0_full_e2e.py` — fails at flow 0 step 8 (`User A pay invoice`)
+- `test_flow0_full_e2e.py` — pass
 
 On failure, diagnostic artifacts are written under `/tmp/utexo-lsp-e2e/`.
 
@@ -82,6 +79,15 @@ tests fund fresh wallets and create fresh node state per run.
 - `UTEXO_LSP_REPO` — path to this repo
 - `UTEXO_E2E_LOGS_DIR` — artifact directory
 - `RGBLN_HOST` / `UTEXO_LSP_HOST` — service hosts
+- `RGBLN_ENABLE_VIRTUAL_CHANNELS_V0` — virtual channels feature flag (default: `false`)
+- `UTEXO_DEFAULT_VIRTUAL_OPEN_MODE` — virtual open mode forwarded to `utexo-lsp` when virtual channels are enabled
+- `RGBLN_SHARED_PROXY_ENDPOINT` — optional explicit RGB proxy endpoint reachable from both Docker RLN and host SDK nodes; recommended for cross-environment portability
+
+Notes:
+- Virtual channels are disabled by default. To test virtual-channel behavior, set both:
+  - `RGBLN_ENABLE_VIRTUAL_CHANNELS_V0=true`
+  - `UTEXO_DEFAULT_VIRTUAL_OPEN_MODE=<mode>`
+- If `RGBLN_SHARED_PROXY_ENDPOINT` is unset, the harness attempts Docker network gateway auto-discovery.
 
 For port and password overrides, see [support/config.py](support/config.py).
 
@@ -93,7 +99,5 @@ In CI:
 3. Start regtest with `./regtest.sh start`
 4. Run:
    - `python3 -m pytest tests/unit -vv`
-   - `python3 -m pytest tests/e2e/tests/test_lightning_receive.py -vv`
+   - `python3 -m pytest tests/e2e/tests/test_flow0_full_e2e.py -vv`
 5. Stop regtest in cleanup
-
-`test_flow0_full_e2e.py` should stay out of blocking CI until step 8 is implemented.

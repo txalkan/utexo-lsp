@@ -19,12 +19,16 @@ from e2e.support.harness import (
     ensure_faucet_asset_balance,
     ensure_rln_docker_image,
     fund_nodes,
+    mine,
+    refresh_transfers,
     remove_container,
     reset_environment,
     seed_lsp_from_faucet,
+    sync_sdk_nodes,
     spawn_rln_node,
     spawn_utexo_lsp,
     terminate_process,
+    wait_for_peer_channel_usable,
     wait_for_channels_usable,
     wait_for_rln_boot,
     wait_for_utexo_boot,
@@ -158,10 +162,10 @@ def env(cfg: E2EConfig, request: pytest.FixtureRequest):
 
     clients["lsp"].init(cfg.password)
     clients["faucet"].init(cfg.password)
-    clients["lsp"].unlock_with_payload(docker_unlock_payload(cfg))
-    clients["faucet"].unlock_with_payload(docker_unlock_payload(cfg))
     clients["user_a"].init(cfg.password)
     clients["user_b"].init(cfg.password)
+    clients["lsp"].unlock_with_payload(docker_unlock_payload(cfg))
+    clients["faucet"].unlock_with_payload(docker_unlock_payload(cfg))
     clients["user_a"].unlock(cfg)
     clients["user_b"].unlock(cfg)
 
@@ -185,8 +189,6 @@ def env(cfg: E2EConfig, request: pytest.FixtureRequest):
     wait_for_utexo_boot(lsp_api, cfg)
 
     lsp_pubkey = lsp_api.get_info()["pubkey"]
-    clients["user_a"].connectpeer(f"{lsp_pubkey}@{cfg.daemon_host}:{cfg.lsp_peer_port}")
-    clients["user_b"].connectpeer(f"{lsp_pubkey}@{cfg.daemon_host}:{cfg.lsp_peer_port}")
 
     env_obj = Env(
         cfg=cfg,
@@ -200,6 +202,17 @@ def env(cfg: E2EConfig, request: pytest.FixtureRequest):
         artifact_dir=artifact_dir,
     )
     request.addfinalizer(lambda: dump_current_state(env_obj))
+
+    # Deterministic bring-up: avoid concurrent LSP channel opens racing on RGB allocations.
+    clients["user_a"].connectpeer(f"{lsp_pubkey}@{cfg.daemon_host}:{cfg.lsp_peer_port}")
+    wait_for_peer_channel_usable(env_obj, clients["user_a"], label="user_a")
+    # Let the first RGB channel fully settle in both RLN and SDK state before
+    # asking LSP to allocate the next asset channel.
+    refresh_transfers(env_obj)
+    sync_sdk_nodes(env_obj)
+    mine(env_obj, 2)
+    clients["user_b"].connectpeer(f"{lsp_pubkey}@{cfg.daemon_host}:{cfg.lsp_peer_port}")
+    wait_for_peer_channel_usable(env_obj, clients["user_b"], label="user_b")
 
     wait_for_channels_usable(env_obj)
 

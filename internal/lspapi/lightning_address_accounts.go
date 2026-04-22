@@ -1,12 +1,13 @@
 package lspapi
 
 import (
+	"crypto/rand"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	mrand "math/rand"
 	"strings"
-
-	haikunator "github.com/txalkan/go-haikunator"
 )
 
 const lightningAddressAccountRetryLimit = 128
@@ -24,7 +25,31 @@ func normalizePeerPubkey(peerPubkey string) string {
 }
 
 func mintLightningAddressHandle() string {
-	return strings.ToLower(haikunator.New().Haikunate())
+	return strings.ToLower(randomHaikuHandle())
+}
+
+var lightningAddressAdjectives = []string{
+	"amber", "brisk", "calm", "daring", "eager", "frosty", "gentle", "hidden",
+	"icy", "jolly", "kind", "lucky", "mellow", "nimble", "opal", "proud",
+	"quick", "rusty", "silent", "tidy", "urban", "vivid", "wild", "young",
+}
+
+var lightningAddressNouns = []string{
+	"aurora", "beacon", "comet", "delta", "ember", "forest", "glider", "harbor",
+	"island", "jungle", "kernel", "lagoon", "meadow", "nebula", "oasis", "prairie",
+	"quartz", "river", "summit", "thunder", "uplink", "valley", "whisper", "zephyr",
+}
+
+func randomHaikuHandle() string {
+	seed := make([]byte, 8)
+	if _, err := rand.Read(seed); err != nil {
+		return fmt.Sprintf("user-%d", mrand.Uint32())
+	}
+	r := mrand.New(mrand.NewSource(int64(binary.LittleEndian.Uint64(seed))))
+	adj := lightningAddressAdjectives[r.Intn(len(lightningAddressAdjectives))]
+	noun := lightningAddressNouns[r.Intn(len(lightningAddressNouns))]
+	suffix := r.Intn(10000)
+	return fmt.Sprintf("%s-%s-%04d", adj, noun, suffix)
 }
 
 func (a *API) ensureLightningAddressAccount(ctx context.Context, peerPubkey string) (LightningAddressAccount, error) {

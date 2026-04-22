@@ -5,7 +5,13 @@ from e2e.support.utils import wait_until
 
 
 def run_lightning_receive_flow(env: Env):
-    a_invoice = env.user_a.lninvoice(amt_msat=env.cfg.payment_msat, expiry_sec=3600)["invoice"]
+    # User A must receive local RGB balance before it can send an RGB payment later.
+    a_invoice = env.user_a.lninvoice(
+        amt_msat=env.cfg.payment_msat,
+        expiry_sec=3600,
+        asset_id=env.asset_id,
+        asset_amount=env.cfg.payment_asset_amount,
+    )["invoice"]
 
     lr = env.lsp_api.lightning_receive(ln_invoice=a_invoice, asset_id=env.asset_id)
     rgb_invoice = lr["rgb_invoice"]

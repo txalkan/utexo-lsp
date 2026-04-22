@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,6 +55,9 @@ class E2EConfig:
     docker_proxy_endpoint: str = field(
         default_factory=lambda: os.environ.get("RGBLN_DOCKER_PROXY_ENDPOINT", "rpc://proxy:3000/json-rpc")
     )
+    docker_proxy_host_alias: str = field(
+        default_factory=lambda: os.environ.get("RGBLN_DOCKER_PROXY_HOST_ALIAS", socket.gethostname())
+    )
 
     cron_every_seconds: int = 5
     payment_msat: int = 3_000_000
@@ -61,11 +65,16 @@ class E2EConfig:
     faucet_pay_amount: int = 1
 
     default_channel_capacity_sat: int = 200_000
+    default_channel_push_msat: int = field(default_factory=lambda: _env_int("UTEXO_DEFAULT_CHANNEL_PUSH_MSAT", 5_000_000))
+    default_channel_asset_amount: int = field(
+        default_factory=lambda: _env_int("UTEXO_DEFAULT_CHANNEL_ASSET_AMOUNT", 1)
+    )
+    lsp_seed_asset_amount: int = field(default_factory=lambda: _env_int("UTEXO_LSP_SEED_ASSET_AMOUNT", 3))
     default_virtual_open_mode: str = field(
-        default_factory=lambda: os.environ.get("UTEXO_DEFAULT_VIRTUAL_OPEN_MODE", "trusted_no_broadcast").strip()
+        default_factory=lambda: os.environ.get("UTEXO_DEFAULT_VIRTUAL_OPEN_MODE", "").strip()
     )
     enable_virtual_channels_v0: bool = field(
-        default_factory=lambda: _env_bool("RGBLN_ENABLE_VIRTUAL_CHANNELS_V0", True)
+        default_factory=lambda: _env_bool("RGBLN_ENABLE_VIRTUAL_CHANNELS_V0", False)
     )
 
     node_boot_timeout_seconds: int = 30

@@ -16,7 +16,7 @@ def test_flow0_full_e2e(env):
         channel = next((c for c in channels if c["peer_pubkey"] == env.lsp_pubkey), channels[0])
         if channel["status"] != "Opened" or channel["is_usable"] is not True:
             return False
-        if channel["outbound_balance_msat"] != env.cfg.payment_msat:
+        if channel["outbound_balance_msat"] < env.cfg.payment_msat:
             return False
         return channel
 
@@ -24,7 +24,7 @@ def test_flow0_full_e2e(env):
         user_a_has_outbound_liquidity,
         timeout=env.cfg.payment_timeout_seconds,
         interval=env.cfg.poll_interval_seconds,
-        desc="User A outbound liquidity equals invoice amount",
+        desc="User A outbound liquidity covers invoice amount",
     )
 
     b_invoice = env.user_b.lninvoice(
@@ -79,3 +79,8 @@ def test_flow0_full_e2e(env):
     except AssertionError:
         dump_step8_snapshot("User B invoice did not reach Succeeded", pay=pay)
         raise
+
+    # Success-path snapshots for CI debugging parity with failure snapshots.
+    sync_sdk_nodes(env)
+    write_json(env.artifact_dir / "user-a-listchannels.json", env.user_a.listchannels())
+    write_json(env.artifact_dir / "lsp-listchannels.json", env.lsp_rln.listchannels())

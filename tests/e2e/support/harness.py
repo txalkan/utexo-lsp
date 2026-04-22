@@ -50,7 +50,9 @@ def terminate_process(process: subprocess.Popen | None):
 
 def reset_environment(cfg: E2EConfig):
     kill_matching("^rgb-lightning-node ")
-    kill_matching("utexo-lsp")
+    # Avoid broad "utexo-lsp" matches, which can kill the pytest process itself
+    # when the repository path is part of the command line.
+    kill_matching("(^|[[:space:]])[^[:space:]]*/utexo-lsp([[:space:]]|$)")
     kill_matching("go run \\.")
     remove_container(cfg.lsp_container_name)
     remove_container(cfg.faucet_container_name)
@@ -84,6 +86,8 @@ def spawn_rln_node(cfg: E2EConfig, name: str, datadir: Path, daemon_port: int, p
         name,
         "--user",
         f"{os.getuid()}:{os.getgid()}",
+        "--add-host",
+        f"{cfg.docker_proxy_host_alias}:host-gateway",
         "-p",
         f"{daemon_port}:{daemon_port}",
         "-p",
@@ -124,6 +128,7 @@ def create_sdk_node(
     import rgb_lightning_node as rln
 
     storage_dir.mkdir(parents=True, exist_ok=True)
+    sdk_virtual_peer_pubkeys = virtual_peer_pubkeys if cfg.enable_virtual_channels_v0 else None
     return rln.SdkNode.create(
         rln.SdkInitRequest(
             storage_dir_path=str(storage_dir),
@@ -132,7 +137,7 @@ def create_sdk_node(
             network="regtest",
             max_media_upload_size_mb=20,
             enable_virtual_channels_v0=cfg.enable_virtual_channels_v0,
-            virtual_peer_pubkeys=virtual_peer_pubkeys,
+            virtual_peer_pubkeys=sdk_virtual_peer_pubkeys,
         )
     )
 
@@ -140,6 +145,15 @@ def create_sdk_node(
 def docker_unlock_payload(cfg: E2EConfig) -> dict[str, object]:
     # Dockerized RLN daemons must reach sibling services by compose service name,
     # unlike SDK nodes running on the host, which use localhost endpoints.
+    # For cross-env RGB channel opens (dockerized LSP <-> host SDK nodes),
+    # the proxy endpoint advertised by the dockerized LSP must also be reachable
+    # from both the host and the container. We use the host machine hostname,
+    # resolve it to the host gateway inside the container, and let the host
+    # resolve it normally via its local name service.
+    proxy_endpoint = cfg.docker_proxy_endpoint
+    if proxy_endpoint == "rpc://proxy:3000/json-rpc":
+        proxy_endpoint = f"rpc://{cfg.docker_proxy_host_alias}:3000/json-rpc"
+
     return {
         "password": cfg.password,
         "bitcoind_rpc_username": cfg.bitcoind_user,
@@ -147,9 +161,29 @@ def docker_unlock_payload(cfg: E2EConfig) -> dict[str, object]:
         "bitcoind_rpc_host": cfg.docker_bitcoind_host,
         "bitcoind_rpc_port": cfg.bitcoind_port,
         "indexer_url": cfg.docker_indexer_url,
-        "proxy_endpoint": cfg.docker_proxy_endpoint,
+        "proxy_endpoint": proxy_endpoint,
         "announce_addresses": [],
     }
+
+def docker_network_gateway(network_name: str) -> str | None:
+    try:
+        out = subprocess.run(
+            [
+                "docker",
+                "network",
+                "inspect",
+                network_name,
+                "--format",
+                "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    gateway = out.stdout.strip()
+    return gateway or None
 
 
 def wait_for_rln_boot(client: RlnClient, cfg: E2EConfig):
@@ -204,55 +238,57 @@ def ensure_faucet_asset_balance(cfg: E2EConfig, faucet: RlnClient, asset_id: str
 
 # RGB / transfer helpers
 def seed_lsp_from_faucet(cfg: E2EConfig, lsp: RlnClient, faucet: RlnClient, asset_id: str):
-    # LSP must receive at least one unit before /rgbinvoice can reference this
-    # contract; otherwise the LSP-side RGB node returns UnknownContractId.
-    invoice = lsp.rgbinvoice_any()
-    faucet.sendrgb(
-        {
-            "donation": True,
-            "fee_rate": 7,
-            "min_confirmations": 1,
-            "skip_sync": False,
-            "recipient_map": {
-                asset_id: [
-                    {
-                        "recipient_id": invoice["recipient_id"],
-                        "assignment": {"type": "Fungible", "value": 1},
-                        "transport_endpoints": [cfg.docker_proxy_endpoint],
-                    }
-                ]
-            },
-        }
-    )
-    subprocess.run(
-        [str(cfg.rgbln_repo / "regtest.sh"), "mine", "1"],
-        cwd=cfg.rgbln_repo,
-        check=True,
-    )
-
-    def settled():
-        refresh_transfers_for_clients(lsp, faucet)
-        lsp_recv = next(
-            (t for t in reversed(lsp.listtransfers(asset_id)["transfers"]) if t["kind"] == "ReceiveBlind"),
-            None,
+    # Seed as discrete 1-unit transfers to avoid locking all value in a single
+    # pending change output, which can block opening channels to multiple peers.
+    seed_units = max(1, int(cfg.lsp_seed_asset_amount))
+    for i in range(seed_units):
+        invoice = lsp.rgbinvoice_any()
+        faucet.sendrgb(
+            {
+                "donation": True,
+                "fee_rate": 7,
+                "min_confirmations": 1,
+                "skip_sync": False,
+                "recipient_map": {
+                    asset_id: [
+                        {
+                            "recipient_id": invoice["recipient_id"],
+                            "assignment": {"type": "Fungible", "value": 1},
+                            "transport_endpoints": [cfg.docker_proxy_endpoint],
+                        }
+                    ]
+                },
+            }
         )
-        faucet_send = next(
-            (t for t in reversed(faucet.listtransfers(asset_id)["transfers"]) if t["kind"] == "Send"),
-            None,
+        subprocess.run(
+            [str(cfg.rgbln_repo / "regtest.sh"), "mine", "1"],
+            cwd=cfg.rgbln_repo,
+            check=True,
         )
-        if not lsp_recv or not faucet_send:
-            return False
-        return lsp_recv["status"] == "Settled" and faucet_send["status"] == "Settled"
 
-    wait_until(
-        settled,
-        timeout=cfg.payment_timeout_seconds,
-        interval=cfg.poll_interval_seconds,
-        desc="LSP seeded from faucet",
-    )
+        def settled_one():
+            refresh_transfers_for_clients(lsp, faucet)
+            lsp_recv = next(
+                (t for t in reversed(lsp.listtransfers(asset_id)["transfers"]) if t["kind"] == "ReceiveBlind"),
+                None,
+            )
+            faucet_send = next(
+                (t for t in reversed(faucet.listtransfers(asset_id)["transfers"]) if t["kind"] == "Send"),
+                None,
+            )
+            if not lsp_recv or not faucet_send:
+                return False
+            return lsp_recv["status"] == "Settled" and faucet_send["status"] == "Settled"
+
+        wait_until(
+            settled_one,
+            timeout=cfg.payment_timeout_seconds,
+            interval=cfg.poll_interval_seconds,
+            desc=f"LSP seeded from faucet ({i + 1}/{seed_units})",
+        )
 
     balance = lsp.assetbalance(asset_id)
-    if balance["settled"] < 1:
+    if balance["settled"] < seed_units:
         raise AssertionError(f"LSP did not receive seeded asset from faucet: {balance}")
 
 
@@ -263,7 +299,9 @@ def spawn_utexo_lsp(cfg: E2EConfig, asset_id: str, log_path: Path):
     env["SUPPORTED_ASSET_IDS"] = asset_id
     env["CRON_EVERY"] = f"{cfg.cron_every_seconds}s"
     env["DEFAULT_CHANNEL_CAPACITY_SAT"] = str(cfg.default_channel_capacity_sat)
-    if cfg.default_virtual_open_mode:
+    env["DEFAULT_CHANNEL_PUSH_MSAT"] = str(cfg.default_channel_push_msat)
+    env["DEFAULT_CHANNEL_ASSET_AMOUNT"] = str(cfg.default_channel_asset_amount)
+    if cfg.enable_virtual_channels_v0 and cfg.default_virtual_open_mode:
         env["DEFAULT_VIRTUAL_OPEN_MODE"] = cfg.default_virtual_open_mode
     else:
         env.pop("DEFAULT_VIRTUAL_OPEN_MODE", None)
@@ -312,9 +350,54 @@ def sync_clients(clients: Iterable[object]):
 def sync_sdk_nodes(env: Env):
     sync_clients((env.user_a, env.user_b))
 
+def wait_for_peer_channel_usable(env: Env, peer: RlnClient | SdkNodeClient, *, label: str):
+    mine(env, 2)
+
+    peer_pubkey = peer.nodeinfo()["pubkey"]
+
+    def ready():
+        sync_sdk_nodes(env)
+        lsp_channels = env.lsp_rln.listchannels()["channels"]
+        peer_channels = peer.listchannels()["channels"]
+
+        lsp_chan = next((c for c in lsp_channels if c.get("peer_pubkey") == peer_pubkey), None)
+        if lsp_chan is None:
+            mine(env, 1)
+            return False
+        if lsp_chan.get("status") != "Opened" or not lsp_chan.get("ready") or not lsp_chan.get("is_usable"):
+            mine(env, 1)
+            return False
+        if lsp_chan.get("asset_id") != env.asset_id:
+            mine(env, 1)
+            return False
+
+        expected_mode = env.cfg.default_virtual_open_mode
+        if expected_mode and lsp_chan.get("virtual_open_mode") != expected_mode:
+            mine(env, 1)
+            return False
+
+        peer_chan = next((c for c in peer_channels if c.get("peer_pubkey") == env.lsp_pubkey), None)
+        if peer_chan is None:
+            mine(env, 1)
+            return False
+        if peer_chan.get("status") != "Opened" or not peer_chan.get("ready") or not peer_chan.get("is_usable"):
+            mine(env, 1)
+            return False
+        if peer_chan.get("asset_id") != env.asset_id:
+            mine(env, 1)
+            return False
+        return True
+
+    wait_until(
+        ready,
+        timeout=env.cfg.channel_timeout_seconds,
+        interval=env.cfg.poll_interval_seconds,
+        desc=f"{label} channel usable",
+    )
+
 
 def wait_for_channels_usable(env: Env):
-    mine(env, 6)
+    mine(env, 2)
 
     def ready():
         sync_sdk_nodes(env)
@@ -331,6 +414,23 @@ def wait_for_channels_usable(env: Env):
             return False
         expected_mode = env.cfg.default_virtual_open_mode
         if expected_mode and not all(c.get("virtual_open_mode") == expected_mode for c in channels_lsp):
+            mine(env, 1)
+            return False
+        # Proceed only when all nodes expose RGB-capable channels for the tested asset.
+        if not any(c["is_usable"] and c.get("asset_id") == env.asset_id for c in channels_lsp):
+            mine(env, 1)
+            return False
+        if not any(c["is_usable"] and c.get("asset_id") == env.asset_id for c in channels_a):
+            mine(env, 1)
+            return False
+        if not any(c["is_usable"] and c.get("asset_id") == env.asset_id for c in channels_b):
+            mine(env, 1)
+            return False
+        lsp_peer_pubkeys = {c.get("peer_pubkey") for c in channels_lsp if c.get("asset_id") == env.asset_id}
+        if env.user_a.nodeinfo()["pubkey"] not in lsp_peer_pubkeys:
+            mine(env, 1)
+            return False
+        if env.user_b.nodeinfo()["pubkey"] not in lsp_peer_pubkeys:
             mine(env, 1)
             return False
         return True

@@ -94,3 +94,32 @@ func TestOpenChannelPayloadPreservesExplicitVirtualModeInMapPayload(t *testing.T
 		t.Fatalf("expected explicit virtual_open_mode to remain \"inbound\", got %#v", m["virtual_open_mode"])
 	}
 }
+
+func TestOpenChannelPayloadAddsDefaultAssetAmountForRGBRequest(t *testing.T) {
+	a := &API{
+		cfg: Config{
+			DefaultChannelAssetAmount: 7,
+		},
+	}
+
+	assetID := "rgb:asset"
+	payload, err := a.openChannelPayload(Connection{
+		PeerPubkeyAndOptAddr: "02abc@127.0.0.1:9735",
+		CapacitySat:          200000,
+		PushMsat:             0,
+		AssetID:              &assetID,
+		Public:               false,
+		WithAnchors:          true,
+	})
+	if err != nil {
+		t.Fatalf("openChannelPayload failed: %v", err)
+	}
+
+	req, ok := payload.(OpenChannelRequest)
+	if !ok {
+		t.Fatalf("expected OpenChannelRequest, got %T", payload)
+	}
+	if req.AssetAmount == nil || *req.AssetAmount != 7 {
+		t.Fatalf("expected asset_amount=7, got %#v", req.AssetAmount)
+	}
+}

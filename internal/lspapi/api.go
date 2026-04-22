@@ -544,13 +544,34 @@ func (a *API) getConnections(ctx context.Context) ([]Connection, error) {
 
 	var pResp listPeersResponse
 	if err := json.Unmarshal(raw, &pResp); err == nil && pResp.Peers != nil {
+		publicByDefault := a.cfg.DefaultVirtualOpenMode == ""
 		conns := make([]Connection, 0, len(pResp.Peers))
 		for _, p := range pResp.Peers {
+			// When listconnections is unavailable and we fall back to listpeers,
+			// synthesize RGB channel intents from server allowlist so we don't
+			// accidentally open BTC-only channels for RGB flows.
+			if len(a.cfg.SupportedAssetIDs) > 0 {
+				for _, assetID := range a.cfg.SupportedAssetIDs {
+					assetIDCopy := assetID
+					assetAmount := a.cfg.DefaultChannelAssetAmount
+					conns = append(conns, Connection{
+						PeerPubkeyAndOptAddr: p.Pubkey,
+						CapacitySat:          a.cfg.DefaultChannelCapacitySat,
+						PushMsat:             a.cfg.DefaultChannelPushMsat,
+						AssetID:              &assetIDCopy,
+						AssetAmount:          &assetAmount,
+						Public:               publicByDefault,
+						WithAnchors:          true,
+					})
+				}
+				continue
+			}
+
 			conns = append(conns, Connection{
 				PeerPubkeyAndOptAddr: p.Pubkey,
 				CapacitySat:          a.cfg.DefaultChannelCapacitySat,
 				PushMsat:             a.cfg.DefaultChannelPushMsat,
-				Public:               false,
+				Public:               publicByDefault,
 				WithAnchors:          true,
 			})
 		}
@@ -595,6 +616,21 @@ func (a *API) openChannelPayload(c Connection) (any, error) {
 		if err := json.Unmarshal(c.OpenChannelParams, &payload); err != nil {
 			return nil, err
 		}
+		if c.AssetID != nil {
+			if _, ok := payload["asset_id"]; !ok {
+				payload["asset_id"] = *c.AssetID
+			}
+			if _, ok := payload["asset_amount"]; !ok {
+				assetAmount := c.AssetAmount
+				if assetAmount == nil && a.cfg.DefaultChannelAssetAmount > 0 {
+					v := a.cfg.DefaultChannelAssetAmount
+					assetAmount = &v
+				}
+				if assetAmount != nil {
+					payload["asset_amount"] = *assetAmount
+				}
+			}
+		}
 		if inbound > 0 {
 			if _, ok := payload["push_asset_amount"]; !ok {
 				payload["push_asset_amount"] = inbound
@@ -604,6 +640,8 @@ func (a *API) openChannelPayload(c Connection) (any, error) {
 			if _, ok := payload["virtual_open_mode"]; !ok {
 				payload["virtual_open_mode"] = a.cfg.DefaultVirtualOpenMode
 			}
+			// RLN requires virtual channels to be private.
+			payload["public"] = false
 		}
 		return payload, nil
 	}
@@ -616,12 +654,22 @@ func (a *API) openChannelPayload(c Connection) (any, error) {
 		Public:               c.Public,
 		WithAnchors:          c.WithAnchors,
 	}
+	if c.AssetID != nil {
+		assetAmount := c.AssetAmount
+		if assetAmount == nil && a.cfg.DefaultChannelAssetAmount > 0 {
+			v := a.cfg.DefaultChannelAssetAmount
+			assetAmount = &v
+		}
+		req.AssetAmount = assetAmount
+	}
 	if inbound > 0 {
 		req.PushAssetAmount = &inbound
 	}
 	if a.cfg.DefaultVirtualOpenMode != "" {
 		mode := a.cfg.DefaultVirtualOpenMode
 		req.VirtualOpenMode = &mode
+		// RLN requires virtual channels to be private.
+		req.Public = false
 	}
 	return req, nil
 }
