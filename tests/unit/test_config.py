@@ -12,6 +12,7 @@ def test_config_reads_env_overrides(monkeypatch):
     monkeypatch.setenv("RGBLN_LSP_DAEMON_PORT", "4001")
     monkeypatch.setenv("RGBLN_ENABLE_VIRTUAL_CHANNELS_V0", "false")
     monkeypatch.setenv("UTEXO_DEFAULT_VIRTUAL_OPEN_MODE", "trusted_no_broadcast")
+    monkeypatch.setenv("RGBLN_SHARED_PROXY_ENDPOINT", "rpc://172.18.0.1:3000/json-rpc")
 
     cfg = E2EConfig()
 
@@ -21,6 +22,7 @@ def test_config_reads_env_overrides(monkeypatch):
     assert cfg.lsp_daemon_port == 4001
     assert cfg.enable_virtual_channels_v0 is False
     assert cfg.default_virtual_open_mode == "trusted_no_broadcast"
+    assert cfg.shared_proxy_endpoint == "rpc://172.18.0.1:3000/json-rpc"
 
 
 def test_config_computes_paths_and_urls(monkeypatch):

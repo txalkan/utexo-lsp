@@ -21,6 +21,7 @@ from e2e.support.harness import (
     fund_nodes,
     remove_container,
     reset_environment,
+    settle_after_first_peer_channel,
     seed_lsp_from_faucet,
     spawn_rln_node,
     spawn_utexo_lsp,
@@ -203,6 +204,7 @@ def env(cfg: E2EConfig, request: pytest.FixtureRequest):
     # Deterministic bring-up: avoid concurrent LSP channel opens racing on RGB allocations.
     clients["user_a"].connectpeer(f"{lsp_pubkey}@{cfg.daemon_host}:{cfg.lsp_peer_port}")
     wait_for_peer_channel_usable(env_obj, clients["user_a"], label="user_a")
+    settle_after_first_peer_channel(env_obj)
     clients["user_b"].connectpeer(f"{lsp_pubkey}@{cfg.daemon_host}:{cfg.lsp_peer_port}")
     wait_for_peer_channel_usable(env_obj, clients["user_b"], label="user_b")
 

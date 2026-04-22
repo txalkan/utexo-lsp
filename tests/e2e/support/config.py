@@ -54,6 +54,9 @@ class E2EConfig:
     docker_proxy_endpoint: str = field(
         default_factory=lambda: os.environ.get("RGBLN_DOCKER_PROXY_ENDPOINT", "rpc://proxy:3000/json-rpc")
     )
+    shared_proxy_endpoint: str = field(
+        default_factory=lambda: os.environ.get("RGBLN_SHARED_PROXY_ENDPOINT", "").strip()
+    )
 
     cron_every_seconds: int = 5
     payment_msat: int = 3_000_000

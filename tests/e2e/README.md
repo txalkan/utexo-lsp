@@ -79,6 +79,15 @@ tests fund fresh wallets and create fresh node state per run.
 - `UTEXO_LSP_REPO` — path to this repo
 - `UTEXO_E2E_LOGS_DIR` — artifact directory
 - `RGBLN_HOST` / `UTEXO_LSP_HOST` — service hosts
+- `RGBLN_ENABLE_VIRTUAL_CHANNELS_V0` — virtual channels feature flag (default: `false`)
+- `UTEXO_DEFAULT_VIRTUAL_OPEN_MODE` — virtual open mode forwarded to `utexo-lsp` when virtual channels are enabled
+- `RGBLN_SHARED_PROXY_ENDPOINT` — optional explicit RGB proxy endpoint reachable from both Docker RLN and host SDK nodes; recommended for cross-environment portability
+
+Notes:
+- Virtual channels are disabled by default. To test virtual-channel behavior, set both:
+  - `RGBLN_ENABLE_VIRTUAL_CHANNELS_V0=true`
+  - `UTEXO_DEFAULT_VIRTUAL_OPEN_MODE=<mode>`
+- If `RGBLN_SHARED_PROXY_ENDPOINT` is unset, the harness attempts Docker network gateway auto-discovery.
 
 For port and password overrides, see [support/config.py](support/config.py).
 
