@@ -216,3 +216,41 @@ type AsyncRotatingInvoice struct {
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
+
+type AsyncOrderNewHashInput struct {
+	HashIndex   string `json:"hash_index"`
+	PaymentHash string `json:"payment_hash"`
+}
+
+type AsyncOrderNewRequest struct {
+	ID              any                      `json:"id,omitempty"`
+	PeerPubkey      string                   `json:"peer_pubkey"`
+	ProtocolVersion uint64                   `json:"protocol_version"`
+	Hashes          []AsyncOrderNewHashInput `json:"hashes"`
+}
+
+type AsyncOrderNewResponse struct {
+	ProtocolVersion      uint64 `json:"protocol_version"`
+	OrderID              string `json:"order_id"`
+	Status               string `json:"status"`
+	AcceptedThroughIndex string `json:"accepted_through_index"`
+	NextIndexExpected    string `json:"next_index_expected"`
+	UnusedHashes         string `json:"unused_hashes"`
+	RefillBatchSize      string `json:"refill_batch_size"`
+}
+
+type AsyncOrderJSONRPCResponseEnvelope struct {
+	JSONRPC string           `json:"jsonrpc"`
+	ID      any              `json:"id"`
+	Result  any              `json:"result,omitempty"`
+	Error   *AsyncOrderError `json:"error,omitempty"`
+}
+
+type AsyncOrderError struct {
+	Code    int64  `json:"code"`
+	Message string `json:"message"`
+}
+
+func (e AsyncOrderError) Error() string {
+	return e.Message
+}

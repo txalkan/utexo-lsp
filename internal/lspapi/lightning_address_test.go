@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -51,6 +52,31 @@ func newLightningAddressTestAPI(t *testing.T, domainURL, shortDescription string
 	t.Logf("minted lightning address username: %s", account.Username)
 
 	return api, account
+}
+
+func seedAsyncOrderHashes(t *testing.T, api *API, peerPubkey string, start, count int64) {
+	t.Helper()
+
+	hashes := make([]AsyncOrderNewHashInput, 0, count)
+	for offset := int64(0); offset < count; offset++ {
+		hashIndex := start + offset
+		hashes = append(hashes, AsyncOrderNewHashInput{
+			HashIndex:   strconv.FormatInt(hashIndex, 10),
+			PaymentHash: fmt.Sprintf("%064x", hashIndex),
+		})
+	}
+
+	_, rpcErr, err := api.db.ApplyAsyncOrderNew(context.Background(), AsyncOrderNewRequest{
+		PeerPubkey:      peerPubkey,
+		ProtocolVersion: asyncOrderProtocolVersion,
+		Hashes:          hashes,
+	})
+	if err != nil {
+		t.Fatalf("seed async order hashes: %v", err)
+	}
+	if rpcErr != nil {
+		t.Fatalf("seed async order hashes rpc error: %v", rpcErr)
+	}
 }
 
 func TestLightningAddressDiscovery(t *testing.T) {
@@ -107,6 +133,7 @@ func TestLightningAddressCallbackIncludesDescriptionHash(t *testing.T) {
 
 	api, account := newLightningAddressTestAPI(t, "https://example.com", "Payment to txalkan", newInvoiceStubClient(t, &received, http.StatusOK, map[string]string{"invoice": "lnbc1testinvoice"}))
 	api.cfg.LNInvoicePath = "/lninvoice"
+	seedAsyncOrderHashes(t, api, lightningAddressTestPeerPubkey, 1, 1)
 
 	req := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
 	rr := httptest.NewRecorder()
@@ -139,6 +166,7 @@ func TestLightningAddressCallbackIncludesDescriptionHash(t *testing.T) {
 func TestLightningAddressCallbackPersistsRotatingInvoiceSlots(t *testing.T) {
 	api, account := newLightningAddressTestAPI(t, "https://example.com", "Payment to txalkan", newInvoiceStubClient(t, nil, http.StatusOK, map[string]string{"invoice": "lnbc1testinvoice"}))
 	api.cfg.LNInvoicePath = "/lninvoice"
+	seedAsyncOrderHashes(t, api, lightningAddressTestPeerPubkey, 1, 2)
 	store := api.db.(*SQLStore)
 	formatNullInt64 := func(v sql.NullInt64) string {
 		if !v.Valid {
@@ -266,6 +294,7 @@ func TestLightningAddressCallbackFailsIfDescriptionHashRejected(t *testing.T) {
 
 	api, account := newLightningAddressTestAPI(t, "https://example.com", "Payment to txalkan", newInvoiceStubClient(t, nil, http.StatusBadRequest, map[string]string{"error": "description_hash unsupported"}, &requestCount))
 	api.cfg.LNInvoicePath = "/lninvoice"
+	seedAsyncOrderHashes(t, api, lightningAddressTestPeerPubkey, 1, 1)
 
 	req := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
 	rr := httptest.NewRecorder()
@@ -279,6 +308,28 @@ func TestLightningAddressCallbackFailsIfDescriptionHashRejected(t *testing.T) {
 		t.Fatalf("expected 1 request and no fallback, got %d", requestCount.Load())
 	}
 	if !strings.Contains(rr.Body.String(), "error constructing invoice") {
+		t.Fatalf("unexpected response body: %s", rr.Body.String())
+	}
+}
+
+func TestLightningAddressCallbackFailsWithoutUploadedHashes(t *testing.T) {
+	var requestCount atomic.Int32
+
+	api, account := newLightningAddressTestAPI(t, "https://example.com", "Payment to txalkan", newInvoiceStubClient(t, nil, http.StatusOK, map[string]string{"invoice": "lnbc1testinvoice"}, &requestCount))
+	api.cfg.LNInvoicePath = "/lninvoice"
+
+	req := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
+	rr := httptest.NewRecorder()
+
+	api.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if requestCount.Load() != 0 {
+		t.Fatalf("expected no invoice request when hash pool is empty, got %d", requestCount.Load())
+	}
+	if !strings.Contains(rr.Body.String(), "async hash pool is empty") {
 		t.Fatalf("unexpected response body: %s", rr.Body.String())
 	}
 }

@@ -29,11 +29,104 @@ func (a *API) routes() http.Handler {
 	mux.HandleFunc("GET /pay/callback/{username}", a.handleLightningAddressCallback)
 	mux.HandleFunc("POST /onchain_send", a.handleOnchainSend)
 	mux.HandleFunc("POST /lightning_receive", a.handleLightningReceive)
+	mux.HandleFunc("POST /internal/async_order/new", a.handleInternalAsyncOrderNew)
 	return mux
 }
 
 func (a *API) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *API) handleInternalAsyncOrderNew(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(a.cfg.AsyncOrderBearerToken)
+	if token == "" || r.Header.Get("Authorization") != "Bearer "+token {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req AsyncOrderNewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, AsyncOrderJSONRPCResponseEnvelope{
+			JSONRPC: asyncOrderJSONRPCVersion,
+			ID:      nil,
+			Result:  nil,
+			Error: &AsyncOrderError{
+				Code:    asyncOrderJSONRPCParseError,
+				Message: "parse error",
+			},
+		})
+		return
+	}
+	req.PeerPubkey = normalizePeerPubkey(req.PeerPubkey)
+	if req.PeerPubkey == "" {
+		writeJSON(w, http.StatusBadRequest, AsyncOrderJSONRPCResponseEnvelope{
+			JSONRPC: asyncOrderJSONRPCVersion,
+			ID:      req.ID,
+			Result:  nil,
+			Error: &AsyncOrderError{
+				Code:    asyncOrderJSONRPCInvalidRequest,
+				Message: "invalid request",
+			},
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), a.cfg.HTTPTimeout)
+	defer cancel()
+
+	if _, err := a.ensureLightningAddressAccount(ctx, req.PeerPubkey); err != nil {
+		writeJSON(w, http.StatusInternalServerError, AsyncOrderJSONRPCResponseEnvelope{
+			JSONRPC: asyncOrderJSONRPCVersion,
+			ID:      req.ID,
+			Result:  nil,
+			Error: &AsyncOrderError{
+				Code:    asyncOrderJSONRPCInternalError,
+				Message: err.Error(),
+			},
+		})
+		return
+	}
+
+	resp, rpcErr, err := a.db.ApplyAsyncOrderNew(ctx, req)
+	if rpcErr != nil {
+		writeJSON(w, asyncOrderHTTPStatusFromErrorCode(rpcErr.Code), AsyncOrderJSONRPCResponseEnvelope{
+			JSONRPC: asyncOrderJSONRPCVersion,
+			ID:      req.ID,
+			Result:  nil,
+			Error:   rpcErr,
+		})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, AsyncOrderJSONRPCResponseEnvelope{
+			JSONRPC: asyncOrderJSONRPCVersion,
+			ID:      req.ID,
+			Result:  nil,
+			Error: &AsyncOrderError{
+				Code:    asyncOrderJSONRPCInternalError,
+				Message: err.Error(),
+			},
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, AsyncOrderJSONRPCResponseEnvelope{
+		JSONRPC: asyncOrderJSONRPCVersion,
+		ID:      req.ID,
+		Result:  resp,
+		Error:   nil,
+	})
+}
+
+func asyncOrderHTTPStatusFromErrorCode(code int64) int {
+	switch code {
+	case asyncOrderErrorDuplicateIndexConflict, asyncOrderErrorDuplicateHashConflict:
+		return http.StatusConflict
+	case asyncOrderJSONRPCInternalError:
+		return http.StatusInternalServerError
+	default:
+		return http.StatusBadRequest
+	}
 }
 
 func (a *API) handleGetInfo(w http.ResponseWriter, r *http.Request) {

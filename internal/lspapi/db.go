@@ -33,6 +33,7 @@ type Store interface {
 	ReserveLightningAddressInvoiceSlot(ctx context.Context, account LightningAddressAccount, amountMsat uint64, expiry time.Duration) (AsyncRotatingInvoice, error)
 	FinalizeLightningAddressInvoiceSlot(ctx context.Context, reservationID int64, invoice string) error
 	ReleaseLightningAddressInvoiceSlot(ctx context.Context, reservationID int64, lastErr string) error
+	ApplyAsyncOrderNew(ctx context.Context, req AsyncOrderNewRequest) (AsyncOrderNewResponse, *AsyncOrderError, error)
 	ListOnchainPending(ctx context.Context, limit int) ([]OnchainSendRecord, error)
 	ListLightningPending(ctx context.Context, limit int) ([]LightningReceiveRecord, error)
 	UpdateOnchainStatus(ctx context.Context, id int64, status, lastErr string) error
@@ -150,6 +151,7 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 			order_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			peer_pubkey TEXT NOT NULL UNIQUE,
 			status TEXT NOT NULL,
+			accepted_through_index INTEGER NULL,
 			current_invoice_slot INTEGER NULL,
 			current_hash_index INTEGER NULL,
 			current_payment_hash TEXT NULL,
@@ -186,10 +188,24 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := s.tryAddColumnSQLite(ctx, "async_orders", "accepted_through_index INTEGER"); err != nil {
+		return err
+	}
 	if err := s.tryAddColumnSQLite(ctx, "lightning_receive_mappings", "rgb_asset_id TEXT"); err != nil {
 		return err
 	}
-	return s.tryAddColumnSQLite(ctx, "lightning_receive_mappings", "batch_transfer_idx INTEGER")
+	if err := s.tryAddColumnSQLite(ctx, "lightning_receive_mappings", "batch_transfer_idx INTEGER"); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE async_orders
+		SET accepted_through_index = COALESCE(
+			accepted_through_index,
+			(SELECT COALESCE(MAX(hash_index), 0) FROM async_hash_pool WHERE async_hash_pool.order_id = async_orders.order_id)
+		)
+		WHERE accepted_through_index IS NULL;
+	`)
+	return err
 }
 
 func (s *SQLStore) InsertOnchainSend(ctx context.Context, userRGBInvoice, lspLNInvoice string, lnExpiresAt *time.Time) (int64, error) {
