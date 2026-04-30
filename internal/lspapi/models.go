@@ -18,12 +18,13 @@ type OnchainSendRequest struct {
 }
 
 type LNInvoiceInput struct {
-	AmtMsat         *uint64 `json:"amt_msat,omitempty"`
-	ExpirySec       uint32  `json:"expiry_sec"`
-	AssetID         *string `json:"asset_id,omitempty"`
-	AssetAmount     *uint64 `json:"asset_amount,omitempty"`
-	DescriptionHash *string `json:"description_hash,omitempty"`
-	PaymentHash     *string `json:"payment_hash,omitempty"`
+	AmtMsat                 *uint64 `json:"amt_msat,omitempty"`
+	ExpirySec               uint32  `json:"expiry_sec"`
+	AssetID                 *string `json:"asset_id,omitempty"`
+	AssetAmount             *uint64 `json:"asset_amount,omitempty"`
+	DescriptionHash         *string `json:"description_hash,omitempty"`
+	PaymentHash             *string `json:"payment_hash,omitempty"`
+	MinFinalCltvExpiryDelta *uint16 `json:"min_final_cltv_expiry_delta,omitempty"`
 }
 
 type OnchainSendResponse struct {

@@ -4,12 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const defaultLightningAddressInboundMinFinalCltvDelta uint16 = 144
 
 type Config struct {
 	ServerAddr string
@@ -34,6 +37,7 @@ type Config struct {
 	LightningAddressMinSendableMsat  uint64
 	LightningAddressMaxSendableMsat  uint64
 	LightningAddressInvoiceExpiry    time.Duration
+	LightningAddressFinalCltvDelta   uint16
 	AsyncOrderBearerToken            string
 
 	OpenConnectionPath  string
@@ -88,6 +92,7 @@ func LoadConfig() Config {
 		LightningAddressMinSendableMsat:  uint64(intOrDefault("LIGHTNING_ADDRESS_MIN_SENDABLE_MSAT", 3_000_000)),
 		LightningAddressMaxSendableMsat:  uint64(intOrDefault("LIGHTNING_ADDRESS_MAX_SENDABLE_MSAT", 3_000_000)),
 		LightningAddressInvoiceExpiry:    durationOrDefault("LIGHTNING_ADDRESS_INVOICE_EXPIRY", 1*time.Hour),
+		LightningAddressFinalCltvDelta:   uint16OrDefault("LIGHTNING_ADDRESS_INBOUND_MIN_FINAL_CLTV_DELTA", defaultLightningAddressInboundMinFinalCltvDelta),
 		AsyncOrderBearerToken:            os.Getenv("ASYNC_ORDER_BEARER_TOKEN"),
 		OpenConnectionPath:               envOrDefault("LSP_OPENCONNECTION_PATH", "/connectpeer"),
 		GetInfoPath:                      envOrDefault("LSP_GET_INFO_PATH", "/nodeinfo"),
@@ -126,6 +131,9 @@ func LoadConfig() Config {
 	}
 	if cfg.LightningAddressInvoiceExpiry <= 0 {
 		cfg.LightningAddressInvoiceExpiry = time.Hour
+	}
+	if cfg.LightningAddressFinalCltvDelta == 0 {
+		cfg.LightningAddressFinalCltvDelta = defaultLightningAddressInboundMinFinalCltvDelta
 	}
 	if cfg.LSPBaseURL == "" {
 		log.Fatal("LSP_BASE_URL is required")
@@ -166,6 +174,18 @@ func intOrDefault(k string, d int) int {
 		return d
 	}
 	return i
+}
+
+func uint16OrDefault(k string, d uint16) uint16 {
+	v := os.Getenv(k)
+	if v == "" {
+		return d
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil || i <= 0 || i > math.MaxUint16 {
+		return d
+	}
+	return uint16(i)
 }
 
 func durationOrDefault(k string, d time.Duration) time.Duration {

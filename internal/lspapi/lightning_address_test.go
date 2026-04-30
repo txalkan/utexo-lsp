@@ -161,6 +161,9 @@ func TestLightningAddressCallbackIncludesDescriptionHash(t *testing.T) {
 	if _, ok := received["payment_hash"]; !ok {
 		t.Fatalf("expected payment_hash in request body: %#v", received)
 	}
+	if got := received["min_final_cltv_expiry_delta"]; got != float64(defaultLightningAddressInboundMinFinalCltvDelta) {
+		t.Fatalf("unexpected min_final_cltv_expiry_delta: got %#v", got)
+	}
 }
 
 func TestLightningAddressCallbackPersistsRotatingInvoiceSlots(t *testing.T) {
@@ -365,6 +368,9 @@ func (rt *invoiceStubRoundTripper) RoundTrip(req *http.Request) (*http.Response,
 		}
 		if _, ok := (*rt.received)["payment_hash"]; !ok {
 			rt.t.Errorf("expected payment_hash in request body: %s", string(body))
+		}
+		if got := (*rt.received)["min_final_cltv_expiry_delta"]; got != float64(defaultLightningAddressInboundMinFinalCltvDelta) {
+			rt.t.Errorf("unexpected min_final_cltv_expiry_delta in request body: %s", string(body))
 		}
 	}
 

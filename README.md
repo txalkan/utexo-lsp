@@ -94,6 +94,7 @@ curl -s http://127.0.0.1:8080/.well-known/lnurlp/txalkan
 
 Returns a BOLT11 invoice for the requested amount in millisatoshis.
 The callback includes the LNURL metadata hash as `description_hash` in the underlying `/lninvoice` request, which is required by LUD-06 so the invoice `h` tag matches the metadata string.
+It also sends `min_final_cltv_expiry_delta` from the configured inbound Lightning Address CLTV policy.
 
 Example:
 
@@ -168,6 +169,7 @@ Lightning Address env vars:
 - `LIGHTNING_ADDRESS_MIN_SENDABLE_MSAT` default `3_000_000`
 - `LIGHTNING_ADDRESS_MAX_SENDABLE_MSAT` default `3_000_000`
 - `LIGHTNING_ADDRESS_INVOICE_EXPIRY` default `1h`
+- `LIGHTNING_ADDRESS_INBOUND_MIN_FINAL_CLTV_DELTA` default `144`
 - `ASYNC_ORDER_BEARER_TOKEN` bearer token required for `POST /internal/async_order/new`
 
 Lightning address accounts:

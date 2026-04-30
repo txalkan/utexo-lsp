@@ -174,6 +174,11 @@ func (a *API) requestHodlInvoice(ctx context.Context, amountMsat uint64, metadat
 		AmtMsat:   &amountMsat,
 		ExpirySec: uint32(a.cfg.LightningAddressInvoiceExpiry.Seconds()),
 	}
+	minFinalCltv := a.cfg.LightningAddressFinalCltvDelta
+	if minFinalCltv == 0 {
+		minFinalCltv = defaultLightningAddressInboundMinFinalCltvDelta
+	}
+	payload.MinFinalCltvExpiryDelta = &minFinalCltv
 	if metadata != "" {
 		sum := sha256.Sum256([]byte(metadata))
 		hash := hex.EncodeToString(sum[:])
