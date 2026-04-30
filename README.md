@@ -150,6 +150,7 @@ Core env vars:
 - `DATABASE_DRIVER` `sqlite` (default) or `postgres`
 - `DATABASE_URL` default `utexo_lsp.db`
 - `LSP_BASE_URL` default `http://127.0.0.1:3001`
+- `LSP_TOKEN` optional bearer token used by utexo-lsp for outbound calls to the node API
 - `RGB_NODE_BASE_URL` default `LSP_BASE_URL`
 - `HTTP_TIMEOUT` default `15s`
 - `CRON_EVERY` default `30s`
@@ -167,6 +168,7 @@ Lightning Address env vars:
 - `LIGHTNING_ADDRESS_MIN_SENDABLE_MSAT` default `3_000_000`
 - `LIGHTNING_ADDRESS_MAX_SENDABLE_MSAT` default `3_000_000`
 - `LIGHTNING_ADDRESS_INVOICE_EXPIRY` default `1h`
+- `ASYNC_ORDER_BEARER_TOKEN` bearer token required for `POST /internal/async_order/new`
 
 Lightning address accounts:
 
@@ -199,8 +201,10 @@ From project root:
 
 ```bash
 export LSP_BASE_URL="http://127.0.0.1:3001"
+export LSP_TOKEN=""
 export RGB_NODE_BASE_URL="http://127.0.0.1:3001"
 export LIGHTNING_ADDRESS_DOMAIN_URL="http://127.0.0.1:8080"
+export ASYNC_ORDER_BEARER_TOKEN=""
 export CRON_EVERY="10s"
 go run .
 ```

@@ -1,8 +1,8 @@
 package lspapi
 
 import (
-	"crypto/rand"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"

@@ -34,6 +34,7 @@ type Config struct {
 	LightningAddressMinSendableMsat  uint64
 	LightningAddressMaxSendableMsat  uint64
 	LightningAddressInvoiceExpiry    time.Duration
+	AsyncOrderBearerToken            string
 
 	OpenConnectionPath  string
 	GetInfoPath         string
@@ -87,6 +88,7 @@ func LoadConfig() Config {
 		LightningAddressMinSendableMsat:  uint64(intOrDefault("LIGHTNING_ADDRESS_MIN_SENDABLE_MSAT", 3_000_000)),
 		LightningAddressMaxSendableMsat:  uint64(intOrDefault("LIGHTNING_ADDRESS_MAX_SENDABLE_MSAT", 3_000_000)),
 		LightningAddressInvoiceExpiry:    durationOrDefault("LIGHTNING_ADDRESS_INVOICE_EXPIRY", 1*time.Hour),
+		AsyncOrderBearerToken:            os.Getenv("ASYNC_ORDER_BEARER_TOKEN"),
 		OpenConnectionPath:               envOrDefault("LSP_OPENCONNECTION_PATH", "/connectpeer"),
 		GetInfoPath:                      envOrDefault("LSP_GET_INFO_PATH", "/nodeinfo"),
 		ListConnectionsPath:              envOrDefault("LSP_LISTCONNECTIONS_PATH", "/listpeers"),
