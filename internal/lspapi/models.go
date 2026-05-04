@@ -211,11 +211,20 @@ type AsyncRotatingInvoice struct {
 	HashIndex     int64
 	PaymentHash   string
 	InvoiceString *string
+	AssetAmount   *uint64
+	AssetID       *string
 	AmountMsat    uint64
 	ExpiresAt     time.Time
 	Status        string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+}
+
+type AsyncOrderClaimableRequest struct {
+	AssetAmount *uint64 `json:"asset_amount,omitempty"`
+	AssetID     *string `json:"asset_id,omitempty"`
+	AmountMsat  uint64  `json:"amount_msat"`
+	PaymentHash string  `json:"payment_hash"`
 }
 
 type AsyncOrderNewHashInput struct {

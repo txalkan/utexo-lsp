@@ -29,11 +29,52 @@ func (a *API) routes() http.Handler {
 	mux.HandleFunc("GET /pay/callback/{username}", a.handleLightningAddressCallback)
 	mux.HandleFunc("POST /onchain_send", a.handleOnchainSend)
 	mux.HandleFunc("POST /lightning_receive", a.handleLightningReceive)
+	mux.HandleFunc("POST /internal/async_order/claimable", a.handleInternalInboundInvoiceClaimable)
 	mux.HandleFunc("POST /internal/async_order/new", a.handleInternalAsyncOrderNew)
 	return mux
 }
 
 func (a *API) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *API) handleInternalInboundInvoiceClaimable(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(a.cfg.AsyncOrderBearerToken)
+	if token == "" || r.Header.Get("Authorization") != "Bearer "+token {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req AsyncOrderClaimableRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !isValidPaymentHash(strings.ToLower(strings.TrimSpace(req.PaymentHash))) {
+		writeErr(w, http.StatusBadRequest, "invalid payment_hash")
+		return
+	}
+	if req.AmountMsat == 0 {
+		writeErr(w, http.StatusBadRequest, "amount_msat is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), a.cfg.HTTPTimeout)
+	defer cancel()
+
+	if err := a.db.MarkAsyncRotatingInvoiceClaimable(ctx, req.PaymentHash, req.AmountMsat, req.AssetID, req.AssetAmount); err != nil {
+		if errors.Is(err, errAsyncInvoiceNotFound) {
+			writeErr(w, http.StatusNotFound, "claimable invoice not found")
+			return
+		}
+		if errors.Is(err, errAsyncRotatingInvoiceAmountMsatMismatch) || errors.Is(err, errAsyncRotatingInvoiceAssetIDMismatch) || errors.Is(err, errAsyncRotatingInvoiceAssetAmountMismatch) || errors.Is(err, errAsyncRotatingInvoiceInvalidAmountMsat) || errors.Is(err, errAsyncRotatingInvoiceInvalidAssetID) || errors.Is(err, errAsyncRotatingInvoiceInvalidAssetAmount) {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

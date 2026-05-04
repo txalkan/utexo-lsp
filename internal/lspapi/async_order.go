@@ -24,6 +24,12 @@ const (
 var errAsyncOrderNotFound = errors.New("async order not found")
 var errAsyncHashPoolEmpty = errors.New("async hash pool is empty")
 var errAsyncInvoiceNotFound = errors.New("async rotating invoice not found")
+var errAsyncRotatingInvoiceAmountMsatMismatch = errors.New("async rotating invoice amount_msat mismatch")
+var errAsyncRotatingInvoiceInvalidAmountMsat = errors.New("async rotating invoice invalid amount_msat")
+var errAsyncRotatingInvoiceAssetAmountMismatch = errors.New("async rotating invoice asset_amount mismatch")
+var errAsyncRotatingInvoiceAssetIDMismatch = errors.New("async rotating invoice asset_id mismatch")
+var errAsyncRotatingInvoiceInvalidAssetAmount = errors.New("async rotating invoice invalid asset_amount")
+var errAsyncRotatingInvoiceInvalidAssetID = errors.New("async rotating invoice invalid asset_id")
 
 type asyncOrderRow struct {
 	OrderID              int64
@@ -54,6 +60,8 @@ type asyncRotatingInvoiceRow struct {
 	InvoiceSlot   int64
 	HashIndex     int64
 	PaymentHash   string
+	AssetAmount   sql.NullInt64
+	AssetID       sql.NullString
 	InvoiceString sql.NullString
 	AmountMsat    uint64
 	ExpiresAt     time.Time
@@ -83,7 +91,7 @@ func (s *SQLStore) inDBTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	return nil
 }
 
-func (s *SQLStore) ReserveLightningAddressInvoiceSlot(ctx context.Context, account LightningAddressAccount, amountMsat uint64, expiry time.Duration) (AsyncRotatingInvoice, error) {
+func (s *SQLStore) ReserveLightningAddressInvoiceSlot(ctx context.Context, account LightningAddressAccount, amountMsat uint64, assetID *string, assetAmount *uint64, expiry time.Duration) (AsyncRotatingInvoice, error) {
 	account.PeerPubkey = normalizePeerPubkey(account.PeerPubkey)
 	if account.PeerPubkey == "" {
 		return AsyncRotatingInvoice{}, errors.New("empty peer_pubkey")
@@ -119,6 +127,8 @@ func (s *SQLStore) ReserveLightningAddressInvoiceSlot(ctx context.Context, accou
 			HashIndex:   poolEntry.HashIndex,
 			PaymentHash: poolEntry.PaymentHash,
 			AmountMsat:  amountMsat,
+			AssetAmount: assetAmount,
+			AssetID:     assetID,
 			ExpiresAt:   time.Now().UTC().Add(expiry),
 			Status:      asyncInvoiceStatusReserved,
 		}
@@ -496,10 +506,18 @@ func (s *SQLStore) reserveAsyncHashPoolEntryTx(ctx context.Context, tx *sql.Tx, 
 }
 
 func (s *SQLStore) insertAsyncRotatingInvoiceTx(ctx context.Context, tx *sql.Tx, invoice AsyncRotatingInvoice) (int64, error) {
+	var assetIDValue any
+	if invoice.AssetID != nil {
+		assetIDValue = strings.TrimSpace(*invoice.AssetID)
+	}
+	var assetAmountValue any
+	if invoice.AssetAmount != nil {
+		assetAmountValue = *invoice.AssetAmount
+	}
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO async_rotating_invoices (order_id, invoice_slot, hash_index, payment_hash, amount_msat, expires_at, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, invoice.OrderID, invoice.InvoiceSlot, invoice.HashIndex, invoice.PaymentHash, invoice.AmountMsat, invoice.ExpiresAt, invoice.Status)
+		INSERT INTO async_rotating_invoices (order_id, invoice_slot, hash_index, payment_hash, asset_amount, asset_id, amount_msat, expires_at, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, invoice.OrderID, invoice.InvoiceSlot, invoice.HashIndex, invoice.PaymentHash, assetAmountValue, assetIDValue, invoice.AmountMsat, invoice.ExpiresAt, invoice.Status)
 	if err != nil {
 		return 0, err
 	}
@@ -511,10 +529,23 @@ func (s *SQLStore) insertAsyncRotatingInvoiceTx(ctx context.Context, tx *sql.Tx,
 }
 
 func (s *SQLStore) loadAsyncRotatingInvoiceTx(ctx context.Context, tx *sql.Tx, reservationID int64) (asyncRotatingInvoiceRow, error) {
-	query := `SELECT id, order_id, invoice_slot, hash_index, payment_hash, invoice_string, amount_msat, expires_at, status, created_at, updated_at FROM async_rotating_invoices WHERE id = ? LIMIT 1`
+	query := `SELECT id, order_id, invoice_slot, hash_index, payment_hash, asset_amount, asset_id, invoice_string, amount_msat, expires_at, status, created_at, updated_at FROM async_rotating_invoices WHERE id = ? LIMIT 1`
 	row := tx.QueryRowContext(ctx, query, reservationID)
 	var rec asyncRotatingInvoiceRow
-	if err := row.Scan(&rec.ID, &rec.OrderID, &rec.InvoiceSlot, &rec.HashIndex, &rec.PaymentHash, &rec.InvoiceString, &rec.AmountMsat, &rec.ExpiresAt, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+	if err := row.Scan(&rec.ID, &rec.OrderID, &rec.InvoiceSlot, &rec.HashIndex, &rec.PaymentHash, &rec.AssetAmount, &rec.AssetID, &rec.InvoiceString, &rec.AmountMsat, &rec.ExpiresAt, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return asyncRotatingInvoiceRow{}, errAsyncInvoiceNotFound
+		}
+		return asyncRotatingInvoiceRow{}, err
+	}
+	return rec, nil
+}
+
+func (s *SQLStore) loadAsyncRotatingInvoiceByPaymentHashTx(ctx context.Context, tx *sql.Tx, paymentHash string) (asyncRotatingInvoiceRow, error) {
+	query := `SELECT id, order_id, invoice_slot, hash_index, payment_hash, asset_amount, asset_id, invoice_string, amount_msat, expires_at, status, created_at, updated_at FROM async_rotating_invoices WHERE payment_hash = ? LIMIT 1`
+	row := tx.QueryRowContext(ctx, query, paymentHash)
+	var rec asyncRotatingInvoiceRow
+	if err := row.Scan(&rec.ID, &rec.OrderID, &rec.InvoiceSlot, &rec.HashIndex, &rec.PaymentHash, &rec.AssetAmount, &rec.AssetID, &rec.InvoiceString, &rec.AmountMsat, &rec.ExpiresAt, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return asyncRotatingInvoiceRow{}, errAsyncInvoiceNotFound
 		}
@@ -527,6 +558,61 @@ func (s *SQLStore) finalizeAsyncRotatingInvoiceTx(ctx context.Context, tx *sql.T
 	query := `UPDATE async_rotating_invoices SET invoice_string = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
 	_, err := tx.ExecContext(ctx, query, invoice, asyncInvoiceStatusActive, reservationID)
 	return err
+}
+
+func (s *SQLStore) MarkAsyncRotatingInvoiceClaimable(ctx context.Context, paymentHash string, amountMsat uint64, assetID *string, assetAmount *uint64) error {
+	paymentHash = strings.ToLower(strings.TrimSpace(paymentHash))
+	if !isValidPaymentHash(paymentHash) {
+		return errors.New("invalid payment_hash")
+	}
+	if amountMsat == 0 {
+		return errAsyncRotatingInvoiceInvalidAmountMsat
+	}
+	if assetID != nil && strings.TrimSpace(*assetID) == "" {
+		return errAsyncRotatingInvoiceInvalidAssetID
+	}
+	if assetAmount != nil && *assetAmount == 0 {
+		return errAsyncRotatingInvoiceInvalidAssetAmount
+	}
+
+	return s.inDBTx(ctx, func(tx *sql.Tx) error {
+		rec, err := s.loadAsyncRotatingInvoiceByPaymentHashTx(ctx, tx, paymentHash)
+		if err != nil {
+			return err
+		}
+
+		if rec.AmountMsat != amountMsat {
+			return errAsyncRotatingInvoiceAmountMsatMismatch
+		}
+		if rec.AssetID.Valid {
+			if assetID == nil || strings.TrimSpace(*assetID) != rec.AssetID.String {
+				return errAsyncRotatingInvoiceAssetIDMismatch
+			}
+		}
+		if rec.AssetAmount.Valid {
+			if assetAmount == nil || int64(*assetAmount) != rec.AssetAmount.Int64 {
+				return errAsyncRotatingInvoiceAssetAmountMismatch
+			}
+		}
+
+		res, err := tx.ExecContext(ctx, `
+			UPDATE async_rotating_invoices
+			SET claimable_at = COALESCE(claimable_at, CURRENT_TIMESTAMP),
+			    updated_at = CURRENT_TIMESTAMP
+			WHERE id = ?
+		`, rec.ID)
+		if err != nil {
+			return err
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return errAsyncInvoiceNotFound
+		}
+		return nil
+	})
 }
 
 func (s *SQLStore) markAsyncRotatingInvoiceFailedTx(ctx context.Context, tx *sql.Tx, reservationID int64) error {

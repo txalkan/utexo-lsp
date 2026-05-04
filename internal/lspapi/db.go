@@ -30,8 +30,9 @@ type Store interface {
 	GetLightningAddressAccountByUsername(ctx context.Context, username string) (LightningAddressAccount, error)
 	GetLightningAddressAccountByPeerPubkey(ctx context.Context, peerPubkey string) (LightningAddressAccount, error)
 	InsertLightningAddressAccount(ctx context.Context, account LightningAddressAccount) (bool, error)
-	ReserveLightningAddressInvoiceSlot(ctx context.Context, account LightningAddressAccount, amountMsat uint64, expiry time.Duration) (AsyncRotatingInvoice, error)
+	ReserveLightningAddressInvoiceSlot(ctx context.Context, account LightningAddressAccount, amountMsat uint64, assetID *string, assetAmount *uint64, expiry time.Duration) (AsyncRotatingInvoice, error)
 	FinalizeLightningAddressInvoiceSlot(ctx context.Context, reservationID int64, invoice string) error
+	MarkAsyncRotatingInvoiceClaimable(ctx context.Context, paymentHash string, amountMsat uint64, assetID *string, assetAmount *uint64) error
 	ReleaseLightningAddressInvoiceSlot(ctx context.Context, reservationID int64, lastErr string) error
 	ApplyAsyncOrderNew(ctx context.Context, req AsyncOrderNewRequest) (AsyncOrderNewResponse, *AsyncOrderError, error)
 	ListOnchainPending(ctx context.Context, limit int) ([]OnchainSendRecord, error)
@@ -176,8 +177,12 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 			invoice_slot INTEGER NOT NULL,
 			hash_index INTEGER NOT NULL,
 			payment_hash TEXT NOT NULL,
+			asset_amount INTEGER NULL,
+			asset_id TEXT NULL,
 			invoice_string TEXT NULL,
 			amount_msat INTEGER NOT NULL,
+			claimable_at DATETIME NULL,
+			claim_deadline_height INTEGER NULL,
 			expires_at DATETIME NOT NULL,
 			status TEXT NOT NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -195,6 +200,18 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.tryAddColumnSQLite(ctx, "lightning_receive_mappings", "batch_transfer_idx INTEGER"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "claimable_at DATETIME NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "claim_deadline_height INTEGER NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "asset_amount INTEGER NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "asset_id TEXT NULL"); err != nil {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `

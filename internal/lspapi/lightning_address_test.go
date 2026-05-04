@@ -38,7 +38,7 @@ func newLightningAddressTestAPI(t *testing.T, domainURL, shortDescription string
 			LightningAddressDomainURL:        domainURL,
 			LightningAddressShortDescription: shortDescription,
 			LightningAddressMinSendableMsat:  1_000,
-			LightningAddressMaxSendableMsat:  5_000,
+			LightningAddressMaxSendableMsat:  4_000_000,
 			LightningAddressInvoiceExpiry:    time.Hour,
 		},
 		db:        store,
@@ -102,7 +102,7 @@ func TestLightningAddressDiscovery(t *testing.T) {
 	if resp.Tag != "payRequest" {
 		t.Fatalf("unexpected tag: %s", resp.Tag)
 	}
-	if resp.MinSendable != 1_000 || resp.MaxSendable != 5_000 {
+	if resp.MinSendable != 1_000 || resp.MaxSendable != 4_000_000 {
 		t.Fatalf("unexpected sendable range: %+v", resp)
 	}
 
@@ -130,12 +130,13 @@ func TestLightningAddressDiscoveryRejectsDomainPath(t *testing.T) {
 
 func TestLightningAddressCallbackIncludesDescriptionHash(t *testing.T) {
 	var received map[string]any
+	const assetID = "rgb:EIkAVQvq-WbAb5JG-CYxbUER-oqDNwne-ZNxBDID-p0cpf9U"
 
 	api, account := newLightningAddressTestAPI(t, "https://example.com", "Payment to txalkan", newInvoiceStubClient(t, &received, http.StatusOK, map[string]string{"invoice": "lnbc1testinvoice"}))
 	api.cfg.LNInvoicePath = "/lninvoice"
 	seedAsyncOrderHashes(t, api, lightningAddressTestPeerPubkey, 1, 1)
 
-	req := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
+	req := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000000&asset_id="+url.QueryEscape(assetID)+"&asset_amount=10", nil)
 	rr := httptest.NewRecorder()
 
 	api.routes().ServeHTTP(rr, req)
@@ -161,6 +162,12 @@ func TestLightningAddressCallbackIncludesDescriptionHash(t *testing.T) {
 	if _, ok := received["payment_hash"]; !ok {
 		t.Fatalf("expected payment_hash in request body: %#v", received)
 	}
+	if got, ok := received["asset_id"]; !ok || got != assetID {
+		t.Fatalf("expected asset_id in request body: %#v", received)
+	}
+	if got, ok := received["asset_amount"]; !ok || got != float64(10) {
+		t.Fatalf("expected asset_amount in request body: %#v", received)
+	}
 	if got := received["min_final_cltv_expiry_delta"]; got != float64(defaultLightningAddressInboundMinFinalCltvDelta) {
 		t.Fatalf("unexpected min_final_cltv_expiry_delta: got %#v", got)
 	}
@@ -170,6 +177,8 @@ func TestLightningAddressCallbackPersistsRotatingInvoiceSlots(t *testing.T) {
 	api, account := newLightningAddressTestAPI(t, "https://example.com", "Payment to txalkan", newInvoiceStubClient(t, nil, http.StatusOK, map[string]string{"invoice": "lnbc1testinvoice"}))
 	api.cfg.LNInvoicePath = "/lninvoice"
 	seedAsyncOrderHashes(t, api, lightningAddressTestPeerPubkey, 1, 2)
+	const assetID = "rgb:EIkAVQvq-WbAb5JG-CYxbUER-oqDNwne-ZNxBDID-p0cpf9U"
+	const assetAmount = 10
 	store := api.db.(*SQLStore)
 	formatNullInt64 := func(v sql.NullInt64) string {
 		if !v.Valid {
@@ -201,7 +210,7 @@ func TestLightningAddressCallbackPersistsRotatingInvoiceSlots(t *testing.T) {
 		return orderID
 	}
 
-	req1 := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000000&asset_id="+url.QueryEscape(assetID)+"&asset_amount=10", nil)
 	rr1 := httptest.NewRecorder()
 	api.routes().ServeHTTP(rr1, req1)
 	if rr1.Code != http.StatusOK {
@@ -209,7 +218,7 @@ func TestLightningAddressCallbackPersistsRotatingInvoiceSlots(t *testing.T) {
 	}
 	logOrderSnapshot("after callback 1")
 
-	req2 := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000000&asset_id="+url.QueryEscape(assetID)+"&asset_amount=10", nil)
 	rr2 := httptest.NewRecorder()
 	api.routes().ServeHTTP(rr2, req2)
 	if rr2.Code != http.StatusOK {
@@ -227,7 +236,7 @@ func TestLightningAddressCallbackPersistsRotatingInvoiceSlots(t *testing.T) {
 	}
 
 	rows, err := store.db.QueryContext(context.Background(), `
-		SELECT id, invoice_slot, hash_index, payment_hash, invoice_string, amount_msat, expires_at, status
+		SELECT id, invoice_slot, hash_index, payment_hash, asset_id, asset_amount, invoice_string, amount_msat, expires_at, status
 		FROM async_rotating_invoices
 		WHERE order_id = ?
 		ORDER BY invoice_slot ASC
@@ -244,16 +253,24 @@ func TestLightningAddressCallbackPersistsRotatingInvoiceSlots(t *testing.T) {
 		var slot int64
 		var hashIndex int64
 		var paymentHash string
+		var rowAssetID sql.NullString
+		var rowAssetAmount sql.NullInt64
 		var invoiceString sql.NullString
 		var amountMsat int64
 		var expiresAt time.Time
 		var status string
-		if err := rows.Scan(&id, &slot, &hashIndex, &paymentHash, &invoiceString, &amountMsat, &expiresAt, &status); err != nil {
+		if err := rows.Scan(&id, &slot, &hashIndex, &paymentHash, &rowAssetID, &rowAssetAmount, &invoiceString, &amountMsat, &expiresAt, &status); err != nil {
 			t.Fatalf("scan async invoice: %v", err)
 		}
 		t.Logf("async invoice: id=%d invoice_slot=%d hash_index=%d payment_hash=%s invoice_string=%s amount_msat=%d expires_at=%s status=%s", id, slot, hashIndex, paymentHash, formatNullString(invoiceString), amountMsat, expiresAt.Format(time.RFC3339Nano), status)
 		if status != asyncInvoiceStatusActive {
 			t.Fatalf("expected active invoice status, got %s", status)
+		}
+		if !rowAssetID.Valid || rowAssetID.String != assetID {
+			t.Fatalf("expected asset_id to be persisted, got %#v", rowAssetID)
+		}
+		if !rowAssetAmount.Valid || rowAssetAmount.Int64 != assetAmount {
+			t.Fatalf("expected asset_amount to be persisted, got %#v", rowAssetAmount)
 		}
 		if hashIndex <= 0 {
 			t.Fatalf("expected positive hash index, got %d", hashIndex)
@@ -299,7 +316,7 @@ func TestLightningAddressCallbackFailsIfDescriptionHashRejected(t *testing.T) {
 	api.cfg.LNInvoicePath = "/lninvoice"
 	seedAsyncOrderHashes(t, api, lightningAddressTestPeerPubkey, 1, 1)
 
-	req := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
+	req := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000000", nil)
 	rr := httptest.NewRecorder()
 
 	api.routes().ServeHTTP(rr, req)
@@ -321,7 +338,7 @@ func TestLightningAddressCallbackFailsWithoutUploadedHashes(t *testing.T) {
 	api, account := newLightningAddressTestAPI(t, "https://example.com", "Payment to txalkan", newInvoiceStubClient(t, nil, http.StatusOK, map[string]string{"invoice": "lnbc1testinvoice"}, &requestCount))
 	api.cfg.LNInvoicePath = "/lninvoice"
 
-	req := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000", nil)
+	req := httptest.NewRequest(http.MethodGet, "/pay/callback/"+url.PathEscape(account.Username)+"?amount=3000000", nil)
 	rr := httptest.NewRecorder()
 
 	api.routes().ServeHTTP(rr, req)

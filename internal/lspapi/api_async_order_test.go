@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -144,6 +145,120 @@ func TestInternalAsyncOrderNewReturnsJsonRpcEnvelope(t *testing.T) {
 	}
 	if resp.Result.RefillBatchSize != "200" {
 		t.Fatalf("expected refill_batch_size 200, got %q", resp.Result.RefillBatchSize)
+	}
+}
+
+func TestInternalAsyncOrderClaimableMarksRotatingInvoice(t *testing.T) {
+	store, err := NewStore(Config{
+		DatabaseDriver: "sqlite",
+		DatabaseURL:    filepath.Join(t.TempDir(), "async-order.db"),
+	})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	const peerPubkey = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	ctx := context.Background()
+	inserted, err := store.InsertLightningAddressAccount(ctx, LightningAddressAccount{
+		PeerPubkey: peerPubkey,
+		Username:   "alice",
+	})
+	if err != nil {
+		t.Fatalf("insert lightning address account: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected lightning address account insert")
+	}
+
+	if _, rpcErr, err := store.ApplyAsyncOrderNew(ctx, AsyncOrderNewRequest{
+		PeerPubkey:      peerPubkey,
+		ProtocolVersion: asyncOrderProtocolVersion,
+		Hashes: []AsyncOrderNewHashInput{
+			{
+				HashIndex:   "1",
+				PaymentHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("apply async order new: %v", err)
+	} else if rpcErr != nil {
+		t.Fatalf("apply async order new rpc error: %+v", rpcErr)
+	}
+
+	if err := store.MarkAsyncRotatingInvoiceClaimable(ctx, strings.Repeat("a", 64), 0, nil, nil); !errors.Is(err, errAsyncRotatingInvoiceInvalidAmountMsat) {
+		t.Fatalf("expected invalid amount_msat error, got %v", err)
+	}
+
+	assetID := "rgb-asset-a"
+	assetAmount := uint64(10)
+
+	reserved, err := store.ReserveLightningAddressInvoiceSlot(ctx, LightningAddressAccount{
+		PeerPubkey: peerPubkey,
+		Username:   "alice",
+	}, 3_000_000, &assetID, &assetAmount, time.Hour)
+	if err != nil {
+		t.Fatalf("reserve invoice slot: %v", err)
+	}
+	if err := store.FinalizeLightningAddressInvoiceSlot(ctx, reserved.ID, "lnbc1claimabletest"); err != nil {
+		t.Fatalf("finalize invoice slot: %v", err)
+	}
+
+	api := &API{
+		cfg: Config{
+			HTTPTimeout:           time.Second,
+			AsyncOrderBearerToken: "secret",
+		},
+		db: store,
+	}
+
+	reqBadAmount := httptest.NewRequest(http.MethodPost, "/internal/async_order/claimable", strings.NewReader(`{"amount_msat":3000001,"payment_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_id":"rgb-asset-a","asset_amount":10}`))
+	reqBadAmount.Header.Set("Authorization", "Bearer secret")
+	rrBadAmount := httptest.NewRecorder()
+	api.handleInternalInboundInvoiceClaimable(rrBadAmount, reqBadAmount)
+	if rrBadAmount.Code != http.StatusBadRequest {
+		t.Fatalf("expected mismatch amount request 400, got %d: %s", rrBadAmount.Code, rrBadAmount.Body.String())
+	}
+
+	reqBadAsset := httptest.NewRequest(http.MethodPost, "/internal/async_order/claimable", strings.NewReader(`{"amount_msat":3000000,"payment_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_id":"rgb-asset-b","asset_amount":10}`))
+	reqBadAsset.Header.Set("Authorization", "Bearer secret")
+	rrBadAsset := httptest.NewRecorder()
+	api.handleInternalInboundInvoiceClaimable(rrBadAsset, reqBadAsset)
+	if rrBadAsset.Code != http.StatusBadRequest {
+		t.Fatalf("expected mismatch asset request 400, got %d: %s", rrBadAsset.Code, rrBadAsset.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/async_order/claimable", strings.NewReader(`{"amount_msat":3000000,"payment_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_id":"rgb-asset-a","asset_amount":10}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+
+	api.handleInternalInboundInvoiceClaimable(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var claimableAt sql.NullString
+	if err := store.db.QueryRowContext(ctx, `SELECT claimable_at FROM async_rotating_invoices WHERE payment_hash = ? LIMIT 1`, reserved.PaymentHash).Scan(&claimableAt); err != nil {
+		t.Fatalf("query claimable_at: %v", err)
+	}
+	if !claimableAt.Valid || strings.TrimSpace(claimableAt.String) == "" {
+		t.Fatalf("expected claimable_at to be set, got %#v", claimableAt)
+	}
+
+	var rowAssetID sql.NullString
+	var rowAssetAmount sql.NullInt64
+	if err := store.db.QueryRowContext(ctx, `SELECT asset_id, asset_amount FROM async_rotating_invoices WHERE payment_hash = ? LIMIT 1`, reserved.PaymentHash).Scan(&rowAssetID, &rowAssetAmount); err != nil {
+		t.Fatalf("query asset columns: %v", err)
+	}
+	if !rowAssetID.Valid || rowAssetID.String != "rgb-asset-a" {
+		t.Fatalf("expected asset_id to be persisted, got %#v", rowAssetID)
+	}
+	if !rowAssetAmount.Valid || rowAssetAmount.Int64 != 10 {
+		t.Fatalf("expected asset_amount to be persisted, got %#v", rowAssetAmount)
 	}
 }
 

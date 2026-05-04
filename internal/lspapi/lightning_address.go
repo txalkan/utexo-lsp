@@ -71,6 +71,32 @@ func (a *API) lightningAddressMetadata(account LightningAddressAccount) (string,
 	return address, string(metadata), nil
 }
 
+func parseLightningAddressRgbAssetQueryParams(r *http.Request) (*string, *uint64, error) {
+	query := r.URL.Query()
+	hasAssetID := query.Has("asset_id")
+	hasAssetAmount := query.Has("asset_amount")
+	if !hasAssetID && !hasAssetAmount {
+		return nil, nil, nil
+	}
+	if hasAssetID != hasAssetAmount {
+		return nil, nil, errors.New("asset_id and asset_amount must be provided together")
+	}
+
+	assetID := strings.TrimSpace(query.Get("asset_id"))
+	if assetID == "" {
+		return nil, nil, errors.New("asset_id is required")
+	}
+	assetAmount, err := strconv.ParseUint(strings.TrimSpace(query.Get("asset_amount")), 10, 64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot parse asset_amount: %v", err)
+	}
+	if assetAmount == 0 {
+		return nil, nil, errors.New("asset_amount must be greater than zero")
+	}
+
+	return &assetID, &assetAmount, nil
+}
+
 func (a *API) handleLightningAddressDiscovery(w http.ResponseWriter, r *http.Request) {
 	account, ok, err := a.lightningAddressAccount(r.Context(), r.PathValue("username"))
 	if !ok {
@@ -136,18 +162,23 @@ func (a *API) handleLightningAddressCallback(w http.ResponseWriter, r *http.Requ
 		writeLightningAddressError(w, http.StatusBadRequest, "amount is out of acceptable range")
 		return
 	}
+	assetID, assetAmount, err := parseLightningAddressRgbAssetQueryParams(r)
+	if err != nil {
+		writeLightningAddressError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	_, metadata, err := a.lightningAddressMetadata(account)
 	if err != nil {
 		writeLightningAddressError(w, http.StatusInternalServerError, fmt.Sprintf("failed to build lightning address metadata: %v", err))
 		return
 	}
-	reservation, err := a.db.ReserveLightningAddressInvoiceSlot(r.Context(), account, amountMsat, a.cfg.LightningAddressInvoiceExpiry)
+	reservation, err := a.db.ReserveLightningAddressInvoiceSlot(r.Context(), account, amountMsat, assetID, assetAmount, a.cfg.LightningAddressInvoiceExpiry)
 	if err != nil {
 		writeLightningAddressError(w, http.StatusInternalServerError, fmt.Sprintf("failed to reserve lightning address invoice slot: %v", err))
 		return
 	}
-	invoice, err := a.requestHodlInvoice(r.Context(), amountMsat, metadata, reservation.PaymentHash)
+	invoice, err := a.requestHodlInvoice(r.Context(), amountMsat, assetID, assetAmount, metadata, reservation.PaymentHash)
 	if err != nil {
 		if releaseErr := a.db.ReleaseLightningAddressInvoiceSlot(r.Context(), reservation.ID, err.Error()); releaseErr != nil {
 			err = fmt.Errorf("%v (and failed to release reservation: %v)", err, releaseErr)
@@ -166,13 +197,19 @@ func (a *API) handleLightningAddressCallback(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-func (a *API) requestHodlInvoice(ctx context.Context, amountMsat uint64, metadata, paymentHash string) (string, error) {
+func (a *API) requestHodlInvoice(ctx context.Context, amountMsat uint64, assetID *string, assetAmount *uint64, metadata, paymentHash string) (string, error) {
 	if strings.TrimSpace(paymentHash) == "" {
 		return "", errors.New("empty payment hash")
 	}
 	payload := LNInvoiceInput{
 		AmtMsat:   &amountMsat,
 		ExpirySec: uint32(a.cfg.LightningAddressInvoiceExpiry.Seconds()),
+	}
+	if assetID != nil {
+		payload.AssetID = assetID
+	}
+	if assetAmount != nil {
+		payload.AssetAmount = assetAmount
 	}
 	minFinalCltv := a.cfg.LightningAddressFinalCltvDelta
 	if minFinalCltv == 0 {
