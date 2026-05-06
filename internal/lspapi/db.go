@@ -32,7 +32,13 @@ type Store interface {
 	InsertLightningAddressAccount(ctx context.Context, account LightningAddressAccount) (bool, error)
 	ReserveLightningAddressInvoiceSlot(ctx context.Context, account LightningAddressAccount, amountMsat uint64, assetID *string, assetAmount *uint64, expiry time.Duration) (AsyncRotatingInvoice, error)
 	FinalizeLightningAddressInvoiceSlot(ctx context.Context, reservationID int64, invoice string) error
-	MarkAsyncRotatingInvoiceClaimable(ctx context.Context, paymentHash string, amountMsat uint64, assetID *string, assetAmount *uint64) error
+	GetAsyncOrderPeerPubkeyByOrderID(ctx context.Context, orderID int64) (string, error)
+	LoadAsyncRotatingInvoiceByPaymentHash(ctx context.Context, paymentHash string) (AsyncRotatingInvoice, error)
+	MarkAsyncRotatingInvoiceClaimable(ctx context.Context, paymentHash string, amountMsat uint64, claimDeadlineHeight *uint32) error
+	MarkAsyncRotatingInvoiceOutboundRequested(ctx context.Context, paymentHash string) error
+	MarkAsyncRotatingInvoiceOutboundPending(ctx context.Context, paymentHash, requestInvoicePaymentHash, invoice string) error
+	MarkAsyncRotatingInvoiceOutboundPaid(ctx context.Context, requestInvoicePaymentHash string) error
+	MarkAsyncRotatingInvoiceOutboundClaimed(ctx context.Context, requestInvoicePaymentHash, paymentPreimage string) error
 	ReleaseLightningAddressInvoiceSlot(ctx context.Context, reservationID int64, lastErr string) error
 	ApplyAsyncOrderNew(ctx context.Context, req AsyncOrderNewRequest) (AsyncOrderNewResponse, *AsyncOrderError, error)
 	ListOnchainPending(ctx context.Context, limit int) ([]OnchainSendRecord, error)
@@ -176,6 +182,7 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 			order_id INTEGER NOT NULL REFERENCES async_orders(order_id) ON DELETE CASCADE,
 			invoice_slot INTEGER NOT NULL,
 			hash_index INTEGER NOT NULL,
+			claim_session_id TEXT NOT NULL,
 			payment_hash TEXT NOT NULL,
 			asset_amount INTEGER NULL,
 			asset_id TEXT NULL,
@@ -183,6 +190,13 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 			amount_msat INTEGER NOT NULL,
 			claimable_at DATETIME NULL,
 			claim_deadline_height INTEGER NULL,
+			claim_session_status TEXT NULL,
+			outbound_pending_at DATETIME NULL,
+			outbound_paid_at DATETIME NULL,
+			request_invoice_at DATETIME NULL,
+			request_invoice_bolt11 TEXT NULL,
+			request_invoice_payment_hash TEXT NULL,
+			payment_preimage TEXT NULL,
 			expires_at DATETIME NOT NULL,
 			status TEXT NOT NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -208,10 +222,49 @@ func (s *SQLStore) pingAndMigrate(ctx context.Context) error {
 	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "claim_deadline_height INTEGER NULL"); err != nil {
 		return err
 	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "claim_session_status TEXT NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "claim_session_id TEXT NULL"); err != nil {
+		return err
+	}
 	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "asset_amount INTEGER NULL"); err != nil {
 		return err
 	}
 	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "asset_id TEXT NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "outbound_pending_at DATETIME NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "outbound_paid_at DATETIME NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "request_invoice_at DATETIME NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "request_invoice_bolt11 TEXT NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "request_invoice_payment_hash TEXT NULL"); err != nil {
+		return err
+	}
+	if err := s.tryAddColumnSQLite(ctx, "async_rotating_invoices", "payment_preimage TEXT NULL"); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE async_rotating_invoices
+		SET claim_session_status = CASE
+			WHEN payment_preimage IS NOT NULL THEN 'outbound_claimed'
+			WHEN outbound_paid_at IS NOT NULL THEN 'outbound_paid'
+			WHEN outbound_pending_at IS NOT NULL THEN 'outbound_pending'
+			WHEN request_invoice_at IS NOT NULL THEN 'outbound_requested'
+			WHEN claimable_at IS NOT NULL THEN 'claimable'
+			ELSE claim_session_status
+		END
+		WHERE claim_session_status IS NULL;
+	`)
+	if err != nil {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `

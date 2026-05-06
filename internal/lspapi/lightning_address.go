@@ -71,6 +71,11 @@ func (a *API) lightningAddressMetadata(account LightningAddressAccount) (string,
 	return address, string(metadata), nil
 }
 
+func lightningAddressDescriptionHash(metadata string) string {
+	sum := sha256.Sum256([]byte(metadata))
+	return hex.EncodeToString(sum[:])
+}
+
 func parseLightningAddressRgbAssetQueryParams(r *http.Request) (*string, *uint64, error) {
 	query := r.URL.Query()
 	hasAssetID := query.Has("asset_id")
@@ -173,7 +178,7 @@ func (a *API) handleLightningAddressCallback(w http.ResponseWriter, r *http.Requ
 		writeLightningAddressError(w, http.StatusInternalServerError, fmt.Sprintf("failed to build lightning address metadata: %v", err))
 		return
 	}
-	reservation, err := a.db.ReserveLightningAddressInvoiceSlot(r.Context(), account, amountMsat, assetID, assetAmount, a.cfg.LightningAddressInvoiceExpiry)
+	reservation, err := a.db.ReserveLightningAddressInvoiceSlot(r.Context(), account, amountMsat, assetID, assetAmount, a.cfg.APayInboundInvoiceExpiry)
 	if err != nil {
 		writeLightningAddressError(w, http.StatusInternalServerError, fmt.Sprintf("failed to reserve lightning address invoice slot: %v", err))
 		return
@@ -202,8 +207,10 @@ func (a *API) requestHodlInvoice(ctx context.Context, amountMsat uint64, assetID
 		return "", errors.New("empty payment hash")
 	}
 	payload := LNInvoiceInput{
-		AmtMsat:   &amountMsat,
-		ExpirySec: uint32(a.cfg.LightningAddressInvoiceExpiry.Seconds()),
+		AmtMsat:                 &amountMsat,
+		ExpirySec:               uint32(a.cfg.APayInboundInvoiceExpiry.Seconds()),
+		PaymentHash:             &paymentHash,
+		MinFinalCltvExpiryDelta: &a.cfg.APayInboundMinFinalCltvExpiryDelta,
 	}
 	if assetID != nil {
 		payload.AssetID = assetID
@@ -211,18 +218,9 @@ func (a *API) requestHodlInvoice(ctx context.Context, amountMsat uint64, assetID
 	if assetAmount != nil {
 		payload.AssetAmount = assetAmount
 	}
-	minFinalCltv := a.cfg.LightningAddressFinalCltvDelta
-	if minFinalCltv == 0 {
-		minFinalCltv = defaultLightningAddressInboundMinFinalCltvDelta
-	}
-	payload.MinFinalCltvExpiryDelta = &minFinalCltv
 	if metadata != "" {
-		sum := sha256.Sum256([]byte(metadata))
-		hash := hex.EncodeToString(sum[:])
+		hash := lightningAddressDescriptionHash(metadata)
 		payload.DescriptionHash = &hash
-	}
-	if paymentHash != "" {
-		payload.PaymentHash = &paymentHash
 	}
 
 	var resp struct {

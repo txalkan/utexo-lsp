@@ -35,7 +35,7 @@ func TestInternalAsyncOrderNewRequiresControlToken(t *testing.T) {
 	api := &API{
 		cfg: Config{
 			HTTPTimeout: time.Second,
-			// Intentionally leave AsyncOrderBearerToken empty to verify fail-closed behavior.
+			// Intentionally leave APayBearerToken empty to verify fail-closed behavior.
 		},
 	}
 
@@ -52,8 +52,8 @@ func TestInternalAsyncOrderNewRequiresControlToken(t *testing.T) {
 func TestInternalAsyncOrderNewRejectsEmptyPeerPubkey(t *testing.T) {
 	api := &API{
 		cfg: Config{
-			HTTPTimeout:           time.Second,
-			AsyncOrderBearerToken: "secret",
+			HTTPTimeout:     time.Second,
+			APayBearerToken: "secret",
 		},
 	}
 
@@ -99,8 +99,8 @@ func TestInternalAsyncOrderNewReturnsJsonRpcEnvelope(t *testing.T) {
 
 	api := &API{
 		cfg: Config{
-			HTTPTimeout:           time.Second,
-			AsyncOrderBearerToken: "secret",
+			HTTPTimeout:     time.Second,
+			APayBearerToken: "secret",
 		},
 		db: store,
 	}
@@ -189,7 +189,7 @@ func TestInternalAsyncOrderClaimableMarksRotatingInvoice(t *testing.T) {
 		t.Fatalf("apply async order new rpc error: %+v", rpcErr)
 	}
 
-	if err := store.MarkAsyncRotatingInvoiceClaimable(ctx, strings.Repeat("a", 64), 0, nil, nil); !errors.Is(err, errAsyncRotatingInvoiceInvalidAmountMsat) {
+	if err := store.MarkAsyncRotatingInvoiceClaimable(ctx, strings.Repeat("a", 64), 0, nil); !errors.Is(err, errAsyncRotatingInvoiceInvalidAmountMsat) {
 		t.Fatalf("expected invalid amount_msat error, got %v", err)
 	}
 
@@ -207,15 +207,30 @@ func TestInternalAsyncOrderClaimableMarksRotatingInvoice(t *testing.T) {
 		t.Fatalf("finalize invoice slot: %v", err)
 	}
 
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/networkinfo":
+			writeJSON(w, http.StatusOK, networkInfoResponse{Height: 100})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
 	api := &API{
 		cfg: Config{
-			HTTPTimeout:           time.Second,
-			AsyncOrderBearerToken: "secret",
+			HTTPTimeout:                        time.Second,
+			APayBearerToken:                    "secret",
+			LightningAddressDomainURL:          "https://example.com",
+			LightningAddressShortDescription:   "Payment to utexo-lsp",
+			APayInboundMinFinalCltvExpiryDelta: defaultAPayInboundMinFinalCltvExpiryDelta,
+			BlockHeightInfoPath:                "/networkinfo",
 		},
-		db: store,
+		db:        store,
+		rgbClient: NewNodeClient(server.URL, "", 1),
 	}
 
-	reqBadAmount := httptest.NewRequest(http.MethodPost, "/internal/async_order/claimable", strings.NewReader(`{"amount_msat":3000001,"payment_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_id":"rgb-asset-a","asset_amount":10}`))
+	reqBadAmount := httptest.NewRequest(http.MethodPost, "/internal/async_order/claimable", strings.NewReader(`{"amount_msat":3000001,"payment_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_id":"rgb-asset-a","asset_amount":10,"claim_deadline_height":400}`))
 	reqBadAmount.Header.Set("Authorization", "Bearer secret")
 	rrBadAmount := httptest.NewRecorder()
 	api.handleInternalInboundInvoiceClaimable(rrBadAmount, reqBadAmount)
@@ -223,15 +238,7 @@ func TestInternalAsyncOrderClaimableMarksRotatingInvoice(t *testing.T) {
 		t.Fatalf("expected mismatch amount request 400, got %d: %s", rrBadAmount.Code, rrBadAmount.Body.String())
 	}
 
-	reqBadAsset := httptest.NewRequest(http.MethodPost, "/internal/async_order/claimable", strings.NewReader(`{"amount_msat":3000000,"payment_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_id":"rgb-asset-b","asset_amount":10}`))
-	reqBadAsset.Header.Set("Authorization", "Bearer secret")
-	rrBadAsset := httptest.NewRecorder()
-	api.handleInternalInboundInvoiceClaimable(rrBadAsset, reqBadAsset)
-	if rrBadAsset.Code != http.StatusBadRequest {
-		t.Fatalf("expected mismatch asset request 400, got %d: %s", rrBadAsset.Code, rrBadAsset.Body.String())
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/internal/async_order/claimable", strings.NewReader(`{"amount_msat":3000000,"payment_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_id":"rgb-asset-a","asset_amount":10}`))
+	req := httptest.NewRequest(http.MethodPost, "/internal/async_order/claimable", strings.NewReader(`{"amount_msat":3000000,"payment_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_id":"rgb-asset-a","asset_amount":10,"claim_deadline_height":400}`))
 	req.Header.Set("Authorization", "Bearer secret")
 	rr := httptest.NewRecorder()
 

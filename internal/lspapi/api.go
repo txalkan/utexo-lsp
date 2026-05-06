@@ -2,6 +2,8 @@ package lspapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +32,7 @@ func (a *API) routes() http.Handler {
 	mux.HandleFunc("POST /onchain_send", a.handleOnchainSend)
 	mux.HandleFunc("POST /lightning_receive", a.handleLightningReceive)
 	mux.HandleFunc("POST /internal/async_order/claimable", a.handleInternalInboundInvoiceClaimable)
+	mux.HandleFunc("POST /internal/async_order/payment_sent", a.handleInternalAsyncOrderPaymentSent)
 	mux.HandleFunc("POST /internal/async_order/new", a.handleInternalAsyncOrderNew)
 	return mux
 }
@@ -39,7 +42,7 @@ func (a *API) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *API) handleInternalInboundInvoiceClaimable(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimSpace(a.cfg.AsyncOrderBearerToken)
+	token := strings.TrimSpace(a.cfg.APayBearerToken)
 	if token == "" || r.Header.Get("Authorization") != "Bearer "+token {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -50,25 +53,79 @@ func (a *API) handleInternalInboundInvoiceClaimable(w http.ResponseWriter, r *ht
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if !isValidPaymentHash(strings.ToLower(strings.TrimSpace(req.PaymentHash))) {
+	ctx, cancel := context.WithTimeout(r.Context(), a.cfg.HTTPTimeout)
+	defer cancel()
+
+	if req.ClaimDeadlineHeight == nil || *req.ClaimDeadlineHeight == 0 {
+		writeErr(w, http.StatusBadRequest, "claim_deadline_height is required")
+		return
+	}
+	currentHeight, err := a.validateAsyncOrderClaimDeadlineWithinPolicy(ctx, *req.ClaimDeadlineHeight, uint64(a.cfg.APayInboundMinFinalCltvExpiryDelta))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := a.db.MarkAsyncRotatingInvoiceClaimable(ctx, req.PaymentHash, req.AmountMsat, req.ClaimDeadlineHeight); err != nil {
+		if errors.Is(err, errAsyncInvoiceNotFound) {
+			writeErr(w, http.StatusNotFound, "claimable invoice not found")
+			return
+		}
+		if errors.Is(err, errAsyncRotatingInvoiceAmountMsatMismatch) || errors.Is(err, errAsyncRotatingInvoiceInvalidAmountMsat) {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	go a.triggerAsyncOrderRequestInvoice(req.PaymentHash, currentHeight)
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *API) handleInternalAsyncOrderPaymentSent(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(a.cfg.APayBearerToken)
+	if token == "" || r.Header.Get("Authorization") != "Bearer "+token {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req AsyncOrderPaymentSentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	paymentHash := strings.ToLower(strings.TrimSpace(req.PaymentHash))
+	if !isValidPaymentHash(paymentHash) {
 		writeErr(w, http.StatusBadRequest, "invalid payment_hash")
 		return
 	}
-	if req.AmountMsat == 0 {
-		writeErr(w, http.StatusBadRequest, "amount_msat is required")
+
+	paymentPreimage := strings.ToLower(strings.TrimSpace(req.PaymentPreimage))
+	if !isValidPaymentHash(paymentPreimage) {
+		writeErr(w, http.StatusBadRequest, "invalid payment_preimage")
+		return
+	}
+
+	preimageBytes, err := hex.DecodeString(paymentPreimage)
+	if err != nil || len(preimageBytes) != sha256.Size {
+		writeErr(w, http.StatusBadRequest, "invalid payment_preimage")
+		return
+	}
+	sum := sha256.Sum256(preimageBytes)
+	if hex.EncodeToString(sum[:]) != paymentHash {
+		writeErr(w, http.StatusBadRequest, "payment_preimage does not match payment_hash")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), a.cfg.HTTPTimeout)
 	defer cancel()
 
-	if err := a.db.MarkAsyncRotatingInvoiceClaimable(ctx, req.PaymentHash, req.AmountMsat, req.AssetID, req.AssetAmount); err != nil {
+	if err := a.db.MarkAsyncRotatingInvoiceOutboundClaimed(ctx, paymentHash, paymentPreimage); err != nil {
 		if errors.Is(err, errAsyncInvoiceNotFound) {
-			writeErr(w, http.StatusNotFound, "claimable invoice not found")
-			return
-		}
-		if errors.Is(err, errAsyncRotatingInvoiceAmountMsatMismatch) || errors.Is(err, errAsyncRotatingInvoiceAssetIDMismatch) || errors.Is(err, errAsyncRotatingInvoiceAssetAmountMismatch) || errors.Is(err, errAsyncRotatingInvoiceInvalidAmountMsat) || errors.Is(err, errAsyncRotatingInvoiceInvalidAssetID) || errors.Is(err, errAsyncRotatingInvoiceInvalidAssetAmount) {
-			writeErr(w, http.StatusBadRequest, err.Error())
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -79,7 +136,7 @@ func (a *API) handleInternalInboundInvoiceClaimable(w http.ResponseWriter, r *ht
 }
 
 func (a *API) handleInternalAsyncOrderNew(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimSpace(a.cfg.AsyncOrderBearerToken)
+	token := strings.TrimSpace(a.cfg.APayBearerToken)
 	if token == "" || r.Header.Get("Authorization") != "Bearer "+token {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -157,6 +214,265 @@ func (a *API) handleInternalAsyncOrderNew(w http.ResponseWriter, r *http.Request
 		Result:  resp,
 		Error:   nil,
 	})
+}
+
+func (a *API) validateAsyncOrderClaimDeadlineWithinPolicy(ctx context.Context, claimDeadlineHeight uint32, requiredBlocks uint64) (uint32, error) {
+	if a.rgbClient == nil {
+		return 0, errors.New("rgb client is not configured")
+	}
+
+	var netInfo networkInfoResponse
+	if err := a.rgbClient.DoJSON(ctx, http.MethodGet, a.cfg.BlockHeightInfoPath, nil, &netInfo); err != nil {
+		return 0, err
+	}
+	if claimDeadlineHeight <= netInfo.Height {
+		return netInfo.Height, fmt.Errorf(
+			"claim_deadline_height %d already passed at height %d",
+			claimDeadlineHeight,
+			netInfo.Height,
+		)
+	}
+
+	blocksLeft := uint64(claimDeadlineHeight - netInfo.Height)
+	if blocksLeft < requiredBlocks {
+		return netInfo.Height, fmt.Errorf(
+			"claim_deadline_height %d is too close to current height %d (have %d blocks, need %d)",
+			claimDeadlineHeight,
+			netInfo.Height,
+			blocksLeft,
+			requiredBlocks,
+		)
+	}
+
+	return netInfo.Height, nil
+}
+
+func (a *API) triggerAsyncOrderRequestInvoice(paymentHash string, currentHeight uint32) {
+	if a.rgbClient == nil {
+		log.Printf("async_order.request_invoice: skipping %s because rgb client is not configured", paymentHash)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.HTTPTimeout)
+	defer cancel()
+
+	invoice, err := a.db.LoadAsyncRotatingInvoiceByPaymentHash(ctx, paymentHash)
+	if err != nil {
+		log.Printf("async_order.request_invoice: load invoice for %s failed: %v", paymentHash, err)
+		return
+	}
+	if invoice.ClaimDeadlineHeight == nil {
+		log.Printf("async_order.request_invoice: skipping %s because claim_deadline_height is missing", paymentHash)
+		return
+	}
+	if currentHeight >= *invoice.ClaimDeadlineHeight {
+		log.Printf(
+			"async_order.request_invoice: skipping %s because claim_deadline_height %d already passed at height %d",
+			paymentHash,
+			*invoice.ClaimDeadlineHeight,
+			currentHeight,
+		)
+		return
+	}
+	requiredBlocks := uint64(a.cfg.APayOutboundMinFinalCltvExpiryDelta)
+	blocksLeft := uint64(*invoice.ClaimDeadlineHeight - a.cfg.claimMarginBlocks() - currentHeight)
+	if blocksLeft < requiredBlocks {
+		log.Printf(
+			"async_order.request_invoice: skipping %s because claim_deadline_height %d is too close to current height %d (have %d blocks, need %d)",
+			paymentHash,
+			*invoice.ClaimDeadlineHeight,
+			currentHeight,
+			blocksLeft,
+			requiredBlocks,
+		)
+		return
+	}
+
+	peerPubkey, err := a.db.GetAsyncOrderPeerPubkeyByOrderID(ctx, invoice.OrderID)
+	if err != nil {
+		log.Printf("async_order.request_invoice: load peer for %s failed: %v", paymentHash, err)
+		return
+	}
+
+	account, err := a.db.GetLightningAddressAccountByPeerPubkey(ctx, peerPubkey)
+	if err != nil {
+		log.Printf("async_order.request_invoice: load lightning address account for %s failed: %v", paymentHash, err)
+		return
+	}
+	_, metadata, err := a.lightningAddressMetadata(account)
+	if err != nil {
+		log.Printf("async_order.request_invoice: build lightning address metadata for %s failed: %v", paymentHash, err)
+		return
+	}
+	descriptionHash := lightningAddressDescriptionHash(metadata)
+
+	if err := a.db.MarkAsyncRotatingInvoiceOutboundRequested(ctx, paymentHash); err != nil {
+		log.Printf("async_order.request_invoice: persist outbound_requested for %s failed: %v", paymentHash, err)
+		return
+	}
+
+	params := AsyncOrderRequestOutboundInvoiceParams{
+		AmountMsat:              invoice.AmountMsat,
+		AssetAmount:             invoice.AssetAmount,
+		AssetID:                 invoice.AssetID,
+		DescriptionHash:         descriptionHash,
+		InvoiceExpirySec:        uint32(a.cfg.APayOutboundInvoiceExpiry.Seconds()),
+		MinFinalCltvExpiryDelta: a.cfg.APayOutboundMinFinalCltvExpiryDelta,
+		ClaimSessionID:          invoice.ClaimSessionID,
+		HashIndex:               strconv.FormatInt(invoice.HashIndex, 10),
+		PaymentHash:             invoice.PaymentHash,
+	}
+
+	req := AsyncOrderOutboundInvoiceRequest{
+		ClientNodeID: peerPubkey,
+		Params:       params,
+	}
+
+	var resp AsyncOrderOutboundInvoiceResponse
+	if err := a.rgbClient.DoJSON(ctx, http.MethodPost, a.cfg.APayRequestOutboundInvoicePath, req, &resp); err != nil {
+		log.Printf("async_order.request_invoice: POST %s for %s failed: %v", a.cfg.APayRequestOutboundInvoicePath, paymentHash, err)
+		return
+	}
+
+	requestInvoicePaymentHash := strings.ToLower(strings.TrimSpace(resp.PaymentHash))
+	if err := a.validateAsyncOrderRequestInvoiceResponse(ctx, invoice, peerPubkey, currentHeight, params, resp); err != nil {
+		log.Printf("async_order.request_invoice: invalid response invoice for %s: %v", paymentHash, err)
+		return
+	}
+
+	if err := a.db.MarkAsyncRotatingInvoiceOutboundPending(ctx, paymentHash, requestInvoicePaymentHash, resp.Bolt11); err != nil {
+		log.Printf("async_order.request_invoice: persist outbound_pending for %s failed: %v", paymentHash, err)
+	}
+	if err := a.sendLNByInvoice(ctx, resp.Bolt11); err != nil {
+		log.Printf("async_order.request_invoice: send payment for %s failed: %v", paymentHash, err)
+		return
+	}
+
+	if err := a.db.MarkAsyncRotatingInvoiceOutboundPaid(ctx, requestInvoicePaymentHash); err != nil {
+		log.Printf("async_order.request_invoice: persist outbound_paid for %s failed: %v", paymentHash, err)
+	}
+}
+
+func (a *API) validateAsyncOrderRequestInvoiceResponse(ctx context.Context, reserved AsyncRotatingInvoice, peerPubkey string, currentHeight uint32, params AsyncOrderRequestOutboundInvoiceParams, resp AsyncOrderOutboundInvoiceResponse) error {
+	responsePaymentHash := strings.ToLower(strings.TrimSpace(resp.PaymentHash))
+	if !isValidPaymentHash(responsePaymentHash) {
+		return fmt.Errorf("invalid outbound invoice payment_hash %q", resp.PaymentHash)
+	}
+	expectedPaymentHash := strings.ToLower(strings.TrimSpace(reserved.PaymentHash))
+	if responsePaymentHash != expectedPaymentHash {
+		return fmt.Errorf("invalid outbound invoice - response payment_hash mismatch: got %s want %s", responsePaymentHash, expectedPaymentHash)
+	}
+	if strings.TrimSpace(resp.Bolt11) == "" {
+		return errors.New("invalid outbound invoice - empty response bolt11")
+	}
+
+	decoded, err := a.validateLNInvoice(ctx, resp.Bolt11)
+	if err != nil {
+		return err
+	}
+	decodedPaymentHash := strings.ToLower(strings.TrimSpace(decoded.PaymentHash))
+	if !isValidPaymentHash(decodedPaymentHash) {
+		return fmt.Errorf("invalid outbound invoice - decoded invoice has invalid payment_hash %q", decoded.PaymentHash)
+	}
+	if decodedPaymentHash != responsePaymentHash {
+		return fmt.Errorf("invalid outbound invoice - decoded invoice payment_hash mismatch: got %s want %s", decodedPaymentHash, responsePaymentHash)
+	}
+	if decoded.DescriptionHash == nil {
+		return errors.New("decoded invoice missing description_hash")
+	}
+	decodedDescriptionHash := strings.ToLower(strings.TrimSpace(*decoded.DescriptionHash))
+	expectedDescriptionHash := strings.ToLower(strings.TrimSpace(params.DescriptionHash))
+	if decodedDescriptionHash != expectedDescriptionHash {
+		return fmt.Errorf(
+			"invalid outbound invoice - decoded invoice description_hash mismatch: got %s want %s",
+			decodedDescriptionHash,
+			expectedDescriptionHash,
+		)
+	}
+	if params.AmountMsat != reserved.AmountMsat {
+		return fmt.Errorf("invalid outbound invoice - rotating invoice amount_msat mismatch with request params: got %d want %d", params.AmountMsat, reserved.AmountMsat)
+	}
+	if err := validateOptionalStringMatch(reserved.AssetID, params.AssetID, "asset_id"); err != nil {
+		return fmt.Errorf("invalid outbound invoice - rotating invoice mismatch with request params: %w", err)
+	}
+	if err := validateOptionalUint64Match(reserved.AssetAmount, params.AssetAmount, "asset_amount"); err != nil {
+		return fmt.Errorf("invalid outbound invoice - rotating invoice mismatch with request params: %w", err)
+	}
+	if decoded.AmtMsat == nil || *decoded.AmtMsat != reserved.AmountMsat {
+		return fmt.Errorf("invalid outbound invoice - decoded invoice amount_msat mismatch: got %s want %d", formatOptionalUint64(decoded.AmtMsat), reserved.AmountMsat)
+	}
+	if err := validateOptionalStringMatch(reserved.AssetID, decoded.AssetID, "asset_id"); err != nil {
+		return err
+	}
+	if err := validateOptionalUint64Match(reserved.AssetAmount, decoded.AssetAmount, "asset_amount"); err != nil {
+		return err
+	}
+
+	decodedPayee := ""
+	if decoded.PayeePubkey != nil {
+		decodedPayee = normalizePeerPubkey(*decoded.PayeePubkey)
+	}
+	expectedPayee := normalizePeerPubkey(peerPubkey)
+	if decodedPayee == "" {
+		return errors.New("decoded invoice missing payee_pubkey")
+	}
+	if decodedPayee != expectedPayee {
+		return fmt.Errorf("decoded invoice payee_pubkey mismatch: got %s want %s", decodedPayee, expectedPayee)
+	}
+	if decoded.ExpirySec != uint64(params.InvoiceExpirySec) {
+		return fmt.Errorf("invalid outbound invoice - decoded invoice expiry_sec %d does not match requested %d", decoded.ExpirySec, params.InvoiceExpirySec)
+	}
+
+	minCltv := uint64(params.MinFinalCltvExpiryDelta)
+	if decoded.MinFinalCltvExpiryDelta != minCltv {
+		return fmt.Errorf(
+			"decoded invoice min_final_cltv_expiry_delta %d does not match requested %d",
+			decoded.MinFinalCltvExpiryDelta,
+			minCltv,
+		)
+	}
+	if reserved.ClaimDeadlineHeight == nil || *reserved.ClaimDeadlineHeight <= currentHeight {
+		return errors.New("claim_deadline_height is missing or already passed")
+	}
+	blocksLeft := uint64(*reserved.ClaimDeadlineHeight - currentHeight)
+	requiredBlocks := decoded.MinFinalCltvExpiryDelta + uint64(a.cfg.claimMarginBlocks())
+	if blocksLeft < requiredBlocks {
+		return fmt.Errorf("claim_deadline_height too close after decoded invoice CLTV check: have %d blocks, need %d", blocksLeft, requiredBlocks)
+	}
+
+	return nil
+}
+
+func validateOptionalStringMatch(expected, got *string, field string) error {
+	expectedValue := ""
+	if expected != nil {
+		expectedValue = strings.TrimSpace(*expected)
+	}
+	gotValue := ""
+	if got != nil {
+		gotValue = strings.TrimSpace(*got)
+	}
+	if expectedValue != gotValue {
+		return fmt.Errorf("decoded invoice %s mismatch: got %q want %q", field, gotValue, expectedValue)
+	}
+	return nil
+}
+
+func validateOptionalUint64Match(expected, got *uint64, field string) error {
+	if expected == nil && got == nil {
+		return nil
+	}
+	if expected == nil || got == nil || *expected != *got {
+		return fmt.Errorf("decoded invoice %s mismatch: got %s want %s", field, formatOptionalUint64(got), formatOptionalUint64(expected))
+	}
+	return nil
+}
+
+func formatOptionalUint64(v *uint64) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return strconv.FormatUint(*v, 10)
 }
 
 func asyncOrderHTTPStatusFromErrorCode(code int64) int {
@@ -634,12 +950,19 @@ func (a *API) sendRGBByInvoice(ctx context.Context, rgbInvoice string) error {
 }
 
 func (a *API) sendLNByInvoice(ctx context.Context, lnInvoice string) error {
+	if a.lspClient == nil {
+		return errors.New("lsp client is not configured")
+	}
+	path := strings.TrimSpace(a.cfg.SendLNPath)
+	if path == "" {
+		path = "/sendpayment"
+	}
 	payload := map[string]any{"invoice": lnInvoice}
-	err := a.lspClient.DoJSON(ctx, http.MethodPost, a.cfg.SendLNPath, payload, nil)
+	err := a.lspClient.DoJSON(ctx, http.MethodPost, path, payload, nil)
 	if err == nil {
 		return nil
 	}
-	if a.cfg.SendLNPath == "/sendln" {
+	if path == "/sendln" {
 		if hErr, ok := err.(*HTTPError); ok && hErr.StatusCode == http.StatusNotFound {
 			return a.lspClient.DoJSON(ctx, http.MethodPost, "/sendpayment", payload, nil)
 		}

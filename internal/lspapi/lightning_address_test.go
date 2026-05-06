@@ -35,11 +35,14 @@ func newLightningAddressTestAPI(t *testing.T, domainURL, shortDescription string
 
 	api := &API{
 		cfg: Config{
-			LightningAddressDomainURL:        domainURL,
-			LightningAddressShortDescription: shortDescription,
-			LightningAddressMinSendableMsat:  1_000,
-			LightningAddressMaxSendableMsat:  4_000_000,
-			LightningAddressInvoiceExpiry:    time.Hour,
+			LightningAddressDomainURL:           domainURL,
+			LightningAddressShortDescription:    shortDescription,
+			LightningAddressMinSendableMsat:     1_000,
+			LightningAddressMaxSendableMsat:     4_000_000,
+			APayInboundInvoiceExpiry:            defaultAPayInboundInvoiceExpiry,
+			APayOutboundInvoiceExpiry:           defaultAPayOutboundInvoiceExpiry,
+			APayInboundMinFinalCltvExpiryDelta:  defaultAPayInboundMinFinalCltvExpiryDelta,
+			APayOutboundMinFinalCltvExpiryDelta: defaultAPayOutboundMinFinalCltvExpiryDelta,
 		},
 		db:        store,
 		lspClient: lspClient,
@@ -168,7 +171,7 @@ func TestLightningAddressCallbackIncludesDescriptionHash(t *testing.T) {
 	if got, ok := received["asset_amount"]; !ok || got != float64(10) {
 		t.Fatalf("expected asset_amount in request body: %#v", received)
 	}
-	if got := received["min_final_cltv_expiry_delta"]; got != float64(defaultLightningAddressInboundMinFinalCltvDelta) {
+	if got := received["min_final_cltv_expiry_delta"]; got != float64(defaultAPayInboundMinFinalCltvExpiryDelta) {
 		t.Fatalf("unexpected min_final_cltv_expiry_delta: got %#v", got)
 	}
 }
@@ -386,7 +389,7 @@ func (rt *invoiceStubRoundTripper) RoundTrip(req *http.Request) (*http.Response,
 		if _, ok := (*rt.received)["payment_hash"]; !ok {
 			rt.t.Errorf("expected payment_hash in request body: %s", string(body))
 		}
-		if got := (*rt.received)["min_final_cltv_expiry_delta"]; got != float64(defaultLightningAddressInboundMinFinalCltvDelta) {
+		if got := (*rt.received)["min_final_cltv_expiry_delta"]; got != float64(defaultAPayInboundMinFinalCltvExpiryDelta) {
 			rt.t.Errorf("unexpected min_final_cltv_expiry_delta in request body: %s", string(body))
 		}
 	}

@@ -65,12 +65,20 @@ type LightningAddressCallbackResponse struct {
 	Routes []string `json:"routes"`
 }
 
+type networkInfoResponse struct {
+	Height uint32 `json:"height"`
+}
+
 type decodeLNResponse struct {
-	AmtMsat     *uint64 `json:"amt_msat"`
-	ExpirySec   uint64  `json:"expiry_sec"`
-	Timestamp   uint64  `json:"timestamp"`
-	AssetID     *string `json:"asset_id"`
-	AssetAmount *uint64 `json:"asset_amount"`
+	AmtMsat                 *uint64 `json:"amt_msat"`
+	AssetAmount             *uint64 `json:"asset_amount"`
+	AssetID                 *string `json:"asset_id"`
+	DescriptionHash         *string `json:"description_hash"`
+	ExpirySec               uint64  `json:"expiry_sec"`
+	PaymentHash             string  `json:"payment_hash"`
+	PayeePubkey             *string `json:"payee_pubkey"`
+	MinFinalCltvExpiryDelta uint64  `json:"min_final_cltv_expiry_delta"`
+	Timestamp               uint64  `json:"timestamp"`
 }
 
 type decodeRGBResponse struct {
@@ -205,26 +213,59 @@ type LightningAddressAccount struct {
 }
 
 type AsyncRotatingInvoice struct {
-	ID            int64
-	OrderID       int64
-	InvoiceSlot   int64
-	HashIndex     int64
-	PaymentHash   string
-	InvoiceString *string
-	AssetAmount   *uint64
-	AssetID       *string
-	AmountMsat    uint64
-	ExpiresAt     time.Time
-	Status        string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                  int64
+	OrderID             int64
+	InvoiceSlot         int64
+	HashIndex           int64
+	PaymentHash         string
+	InboundInvoice      *string
+	AssetAmount         *uint64
+	AssetID             *string
+	AmountMsat          uint64
+	ExpiresAt           time.Time
+	Status              string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	ClaimSessionStatus  *string
+	ClaimDeadlineHeight *uint32
+	ClaimSessionID      string
+	OutboundPendingAt   *time.Time
+	OutboundPaidAt      *time.Time
+	RequestInvoiceAt    *time.Time
+	OutboundInvoice     *string
 }
 
 type AsyncOrderClaimableRequest struct {
-	AssetAmount *uint64 `json:"asset_amount,omitempty"`
-	AssetID     *string `json:"asset_id,omitempty"`
-	AmountMsat  uint64  `json:"amount_msat"`
-	PaymentHash string  `json:"payment_hash"`
+	AmountMsat          uint64  `json:"amount_msat"`
+	ClaimDeadlineHeight *uint32 `json:"claim_deadline_height,omitempty"`
+	PaymentHash         string  `json:"payment_hash"`
+}
+
+type AsyncOrderPaymentSentRequest struct {
+	PaymentHash     string `json:"payment_hash"`
+	PaymentPreimage string `json:"payment_preimage"`
+}
+
+type AsyncOrderRequestOutboundInvoiceParams struct {
+	AmountMsat              uint64  `json:"amount_msat"`
+	AssetAmount             *uint64 `json:"asset_amount,omitempty"`
+	AssetID                 *string `json:"asset_id,omitempty"`
+	DescriptionHash         string  `json:"description_hash"`
+	InvoiceExpirySec        uint32  `json:"invoice_expiry_sec"`
+	MinFinalCltvExpiryDelta uint16  `json:"min_final_cltv_expiry_delta"`
+	ClaimSessionID          string  `json:"claim_session_id"`
+	HashIndex               string  `json:"hash_index"`
+	PaymentHash             string  `json:"payment_hash"`
+}
+
+type AsyncOrderOutboundInvoiceRequest struct {
+	ClientNodeID string                                 `json:"client_node_id"`
+	Params       AsyncOrderRequestOutboundInvoiceParams `json:"params"`
+}
+
+type AsyncOrderOutboundInvoiceResponse struct {
+	Bolt11      string `json:"bolt11"`
+	PaymentHash string `json:"payment_hash"`
 }
 
 type AsyncOrderNewHashInput struct {
