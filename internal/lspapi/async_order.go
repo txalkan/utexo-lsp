@@ -17,6 +17,7 @@ var errAsyncHashPoolEmpty = errors.New("async hash pool is empty")
 var errAsyncInvoiceNotFound = errors.New("async rotating invoice not found")
 var errAsyncRotatingInvoiceAmountMsatMismatch = errors.New("async rotating invoice amount_msat mismatch")
 var errAsyncRotatingInvoiceInvalidAmountMsat = errors.New("async rotating invoice invalid amount_msat")
+var errAsyncClaimDeadlineDependency = errors.New("claim deadline validation dependency unavailable")
 
 func (s AsyncInvoiceStatus) Rank() int {
 	switch s {
@@ -1082,6 +1083,37 @@ func (s *SQLStore) MarkAsyncRotatingInvoiceOutboundCancelled(ctx context.Context
 		return false, err
 	}
 	return s.asyncRotatingInvoiceTransitionResult(ctx, paymentHash, asyncInvoiceStatusOutboundRequested, rows)
+}
+
+func (s *SQLStore) MarkAsyncRotatingInvoiceFailed(ctx context.Context, paymentHash string) (bool, error) {
+	paymentHash = strings.ToLower(strings.TrimSpace(paymentHash))
+	if !isValidPaymentHash(paymentHash) {
+		return false, errors.New("invalid payment_hash")
+	}
+
+	var transitioned bool
+	err := s.inDBTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE async_rotating_invoices
+			SET status = ?,
+			    updated_at = CURRENT_TIMESTAMP
+			WHERE payment_hash = ?
+			  AND status IN (?, ?)
+		`, asyncInvoiceStatusFailed, paymentHash, asyncInvoiceStatusClaimable, asyncInvoiceStatusOutboundRequested)
+		if err != nil {
+			return err
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		transitioned, err = s.asyncRotatingInvoiceTransitionResult(ctx, paymentHash, asyncInvoiceStatusClaimable, rows)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	return transitioned, err
 }
 
 func (s *SQLStore) markAsyncRotatingInvoiceFailedTx(ctx context.Context, tx *sql.Tx, reservationID int64) error {

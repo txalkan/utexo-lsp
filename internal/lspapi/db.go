@@ -42,6 +42,7 @@ type Store interface {
 	MarkAsyncRotatingInvoiceInboundClaimed(ctx context.Context, paymentHash string) (bool, error)
 	MarkAsyncRotatingInvoiceInboundCancelled(ctx context.Context, paymentHash string) (bool, error)
 	MarkAsyncRotatingInvoiceOutboundCancelled(ctx context.Context, paymentHash string) (bool, error)
+	MarkAsyncRotatingInvoiceFailed(ctx context.Context, paymentHash string) (bool, error)
 	ClaimAsyncRotatingInvoiceOutboxJob(ctx context.Context) (AsyncRotatingInvoiceOutboxJob, bool, error)
 	MarkAsyncRotatingInvoiceOutboxDone(ctx context.Context, jobID int64) error
 	MarkAsyncRotatingInvoiceOutboxRetry(ctx context.Context, jobID int64, lastErr string) error

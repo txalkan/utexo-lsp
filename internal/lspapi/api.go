@@ -65,6 +65,10 @@ func (a *API) handleInternalInboundInvoiceClaimable(w http.ResponseWriter, r *ht
 		*req.ClaimDeadlineHeight,
 		uint64(a.cfg.APayInboundMinFinalCltvExpiryDelta),
 	); err != nil {
+		if errors.Is(err, errAsyncClaimDeadlineDependency) {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -127,8 +131,22 @@ func (a *API) handleInternalAsyncOrderPaymentSent(w http.ResponseWriter, r *http
 	transitioned, err := a.db.MarkAsyncRotatingInvoiceOutboundClaimed(ctx, paymentHash, paymentPreimage)
 	if err != nil {
 		if errors.Is(err, errAsyncInvoiceNotFound) {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-			return
+			current, loadErr := a.db.LoadAsyncRotatingInvoiceByPaymentHash(ctx, paymentHash)
+			if loadErr != nil {
+				writeErr(w, http.StatusInternalServerError, loadErr.Error())
+				return
+			}
+			switch {
+			case asyncRotatingInvoiceStatusAtOrBeyond(current.Status, asyncInvoiceStatusOutboundClaimed):
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+				return
+			case !asyncRotatingInvoiceStatusAtOrBeyond(current.Status, asyncInvoiceStatusOutboundPaid):
+				writeErr(w, http.StatusServiceUnavailable, "payment_sent received before outbound payment was confirmed locally")
+				return
+			default:
+				writeErr(w, http.StatusInternalServerError, "async invoice in unexpected status before outbound claim")
+				return
+			}
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -224,12 +242,12 @@ func (a *API) handleInternalAsyncOrderNew(w http.ResponseWriter, r *http.Request
 
 func (a *API) validateAsyncOrderClaimDeadlineWithinPolicy(ctx context.Context, claimDeadlineHeight uint32, minFinalCltvExpiryDelta uint64) error {
 	if a.rgbClient == nil {
-		return errors.New("rgb client is not configured")
+		return fmt.Errorf("%w: rgb client is not configured", errAsyncClaimDeadlineDependency)
 	}
 
 	var netInfo networkInfoResponse
 	if err := a.rgbClient.DoJSON(ctx, http.MethodGet, a.cfg.BlockHeightInfoPath, nil, &netInfo); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errAsyncClaimDeadlineDependency, err)
 	}
 	if claimDeadlineHeight <= netInfo.Height {
 		return fmt.Errorf(
@@ -321,7 +339,24 @@ func (a *API) aPayRequestOutboundInvoiceJob(ctx context.Context, paymentHash str
 		*invoice.ClaimDeadlineHeight,
 		uint64(a.cfg.APayOutboundMinFinalCltvExpiryDelta),
 	); err != nil {
-		return err
+		if errors.Is(err, errAsyncClaimDeadlineDependency) {
+			return err
+		}
+		transitioned, markErr := a.db.MarkAsyncRotatingInvoiceFailed(jobCtx, paymentHash)
+		if markErr != nil {
+			return fmt.Errorf("persist failed: %w", markErr)
+		}
+		if !transitioned {
+			current, reloadErr := a.db.LoadAsyncRotatingInvoiceByPaymentHash(jobCtx, paymentHash)
+			if reloadErr != nil {
+				return fmt.Errorf("reload invoice after failed: %w", reloadErr)
+			}
+			if asyncRotatingInvoiceStatusAtOrBeyond(current.Status, asyncInvoiceStatusOutboundPending) {
+				return nil
+			}
+			return fmt.Errorf("async invoice %s in unexpected status %q after deadline validation failure", paymentHash, current.Status)
+		}
+		return nil
 	}
 
 	peerPubkey, err := a.db.GetAsyncOrderPeerPubkeyByOrderID(jobCtx, invoice.OrderID)
