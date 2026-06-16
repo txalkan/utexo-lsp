@@ -46,8 +46,8 @@ def run_lightning_receive_flow(env: Env):
         lsp_transfers = env.lsp_rln.listtransfers(env.asset_id)["transfers"]
         faucet_transfers = env.faucet.listtransfers(env.asset_id)["transfers"]
 
-        lsp_receive = next((t for t in reversed(lsp_transfers) if t["kind"] == "ReceiveBlind"), None)
-        faucet_send = next((t for t in reversed(faucet_transfers) if t["kind"] == "Send"), None)
+        lsp_receive = next((t for t in lsp_transfers if t["kind"] == "ReceiveBlind"), None)
+        faucet_send = next((t for t in faucet_transfers if t["kind"] == "Send"), None)
 
         if lsp_receive is None or faucet_send is None:
             return False
@@ -64,9 +64,7 @@ def run_lightning_receive_flow(env: Env):
 
     def user_a_invoice_succeeded():
         sync_sdk_nodes(env)
-        status = env.user_a.invoicestatus(a_invoice)["status"]
-        print(f"[debug] User A invoice status: {status}")
-        return status == "Succeeded"
+        return env.user_a.invoicestatus(a_invoice)["status"] == "Succeeded"
 
     wait_until(
         user_a_invoice_succeeded,
